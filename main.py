@@ -663,6 +663,8 @@ class ProductResearchApp(App):
                 stage_text = ""
                 success = True
                 last_etype = ""
+                retries = 0
+                MAX_RETRIES = 3
 
                 while True:
                     async for etype, content in stream_stage(self._config, prompt):
@@ -679,9 +681,17 @@ class ProductResearchApp(App):
                             status_bar.set_status(f"⟳  {stage.name}…")
 
                         elif etype == "rate_limit":
+                            retries += 1
+                            if retries > MAX_RETRIES:
+                                self._append_output(
+                                    f"\n\n> ⚠ **{stage.name} failed after {MAX_RETRIES} retries.**\n\n"
+                                )
+                                success = False
+                                last_etype = "error"
+                                break
                             for secs in range(RATE_LIMIT_WAIT, 0, -1):
                                 status_bar.set_status(
-                                    f"⏳  Rate limited — retrying in {secs}s…"
+                                    f"⏳  Rate limited — retry {retries}/{MAX_RETRIES} in {secs}s…"
                                 )
                                 await asyncio.sleep(1)
                             break  # retry
@@ -707,7 +717,7 @@ class ProductResearchApp(App):
                 self._results[stage.id] = stage_text
                 sidebar.set_status(stage.id, "done" if success else "failed")
                 status_bar.set_progress(idx + 1)
-                self._render_markdown()  # final styled render after streaming ends
+                await self._render_markdown()
 
                 if idx < len(STAGES) - 1:
                     self._advance_event.clear()
@@ -755,12 +765,14 @@ class ProductResearchApp(App):
         except Exception:
             pass
 
-    def _render_markdown(self) -> None:
-        """Apply full RichMarkdown render after stage completes."""
+    async def _render_markdown(self) -> None:
+        """Parse markdown in a thread (non-blocking), then update the widget."""
         try:
-            self.query_one("#output-md", Static).update(RichMarkdown(self._stage_buffer))
+            loop = asyncio.get_event_loop()
+            rendered = await loop.run_in_executor(None, RichMarkdown, self._stage_buffer)
+            self.query_one("#output-md", Static).update(rendered)
         except Exception:
-            pass  # keep plain text if markdown render fails
+            pass  # keep plain text if render fails
 
     def _set_status(self, text: str) -> None:
         try:

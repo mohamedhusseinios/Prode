@@ -78,7 +78,9 @@ async def _stream_anthropic(
 
     client = anthropic.AsyncAnthropic(
         api_key=config.api_key,
-        timeout=httpx.Timeout(timeout=120.0, connect=10.0),
+        # connect timeout: 10s  |  read timeout: 300s (web search can hold
+        # the stream open for 60-120s with no bytes while searching)
+        timeout=httpx.Timeout(timeout=300.0, connect=10.0),
     )
     try:
         async with client.messages.stream(
