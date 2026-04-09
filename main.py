@@ -149,7 +149,9 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
                     id="ol-cloud-model",
                     classes="field-input",
                 )
-                yield Label("API Key  (leave blank if not required)", classes="field-label")
+                yield Label(
+                    "API Key  (leave blank if not required)", classes="field-label"
+                )
                 yield Input(
                     placeholder="(optional)",
                     password=True,
@@ -275,10 +277,10 @@ class StatusBar(Widget):
 
     DEFAULT_CSS = """
     StatusBar {
-        height: 4;
-        border-top: solid $primary-darken-2;
-        padding: 0 2;
-        background: $panel;
+        height: 5;
+        border-top: wide $primary;
+        padding: 1 2;
+        background: $surface-darken-1;
     }
 
     #progress-row {
@@ -295,6 +297,7 @@ class StatusBar(Widget):
     #stage-label {
         width: 1fr;
         color: $text;
+        text-style: bold;
     }
 
     #hint-row {
@@ -302,18 +305,22 @@ class StatusBar(Widget):
     }
 
     #hints {
-        color: $text-muted;
+        color: $text;
+        text-style: bold;
     }
     """
 
     def compose(self) -> ComposeResult:
         with Container(id="progress-row"):
             yield ProgressBar(total=len(STAGES), show_eta=False, id="bar")
-            yield Label("Ready — enter a product idea above.", id="stage-label")
+            yield Label(
+                "Ready — enter a product idea above.", id="stage-label", markup=False
+            )
         with Container(id="hint-row"):
             yield Label(
                 "[E]xport  [Q]uit  [R]eset  [Tab] focus  [↑↓] scroll",
                 id="hints",
+                markup=False,
             )
 
     def set_status(self, text: str) -> None:
@@ -501,7 +508,10 @@ class ProductResearchApp(App):
             self._set_status("⚠  Please enter a product idea first.")
             return
         if not self._config:
-            self.notify("No provider configured — please restart and set up a provider.", severity="error")
+            self.notify(
+                "No provider configured — please restart and set up a provider.",
+                severity="error",
+            )
             self._set_status("⚠  No provider configured.")
             return
         self._current_idea = idea
@@ -594,7 +604,11 @@ class ProductResearchApp(App):
                             self._append_output(
                                 f"\n\n> ⚠ **Error during {stage.name}:** {content}\n\n"
                             )
-                            self.notify(f"Error — {stage.name}: {content[:120]}", severity="error", timeout=10)
+                            self.notify(
+                                f"Error — {stage.name}: {content[:120]}",
+                                severity="error",
+                                timeout=10,
+                            )
                             success = False
                             break
 
@@ -608,7 +622,7 @@ class ProductResearchApp(App):
                 sidebar.set_status(stage.id, "done" if success else "failed")
                 status_bar.set_progress(idx + 1)
 
-            status_bar.set_status("✓  Research complete — press [E] to export")
+            status_bar.set_status("✓  Research complete — press E to export")
             self.notify("Research complete! Press E to export.", timeout=5)
 
         except Exception as exc:
