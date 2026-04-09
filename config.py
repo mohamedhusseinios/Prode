@@ -1,0 +1,40 @@
+"""Persistent config storage for provider settings.
+
+Saves/loads ProviderConfig as JSON to ~/.prode_config.json.
+API keys are stored locally — never committed to git.
+"""
+
+import json
+from pathlib import Path
+from dataclasses import asdict
+
+from researcher import ProviderConfig
+
+CONFIG_PATH = Path.home() / ".prode_config.json"
+
+
+def load_config() -> ProviderConfig | None:
+    """Load saved provider config. Returns None if no config exists."""
+    if not CONFIG_PATH.exists():
+        return None
+    try:
+        data = json.loads(CONFIG_PATH.read_text())
+        return ProviderConfig(
+            provider=data["provider"],
+            model=data.get("model", ""),
+            api_key=data.get("api_key"),
+            base_url=data.get("base_url"),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def save_config(config: ProviderConfig) -> None:
+    """Persist provider config to disk."""
+    CONFIG_PATH.write_text(json.dumps(asdict(config), indent=2))
+
+
+def delete_config() -> None:
+    """Remove saved config."""
+    if CONFIG_PATH.exists():
+        CONFIG_PATH.unlink()

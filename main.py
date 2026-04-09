@@ -6,6 +6,7 @@ Terminal TUI powered by Textual + Anthropic/Ollama + Web Search
 
 import asyncio
 import os
+import time
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
@@ -24,9 +25,11 @@ from textual.widgets import (
     ProgressBar,
     RadioButton,
     RadioSet,
+    TextArea,
 )
 from textual.widget import Widget
 
+from config import load_config, save_config
 from exporter import export_results
 from researcher import ProviderConfig, stream_stage
 from stages import STAGES
@@ -35,7 +38,31 @@ load_dotenv()
 
 VERSION = "v1.0.0"
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-RATE_LIMIT_WAIT = 5  # seconds
+RATE_LIMIT_WAIT = 5
+
+
+def _extract_port(base_url: str) -> str:
+    """Extract port number from a base_url like 'http://localhost:8080/v1'."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    return str(parsed.port) if parsed.port else "11434"
+
+
+class IdeaInput(TextArea):
+    DEFAULT_CSS = """
+    IdeaInput {
+        border: round $primary;
+        padding: 0 1;
+        background: $background;
+    }
+    IdeaInput .text-area--gutter {
+        display: none;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__(id="idea-input")
 
 
 # ─── Provider setup modal ─────────────────────────────────────────────────────
@@ -90,24 +117,41 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
     }
     """
 
-    def __init__(self, prefill_key: str = "") -> None:
+    def __init__(
+        self, saved_config: Optional[ProviderConfig] = None, prefill_key: str = ""
+    ) -> None:
         super().__init__()
         self._prefill_key = prefill_key
         self._provider_idx = 0
+        self._saved_config = saved_config
+        if saved_config:
+            if saved_config.provider == "anthropic":
+                self._provider_idx = 0
+                self._prefill_key = saved_config.api_key or prefill_key
+            elif saved_config.base_url and "localhost" in saved_config.base_url:
+                self._provider_idx = 1
+            else:
+                self._provider_idx = 2
 
     def compose(self) -> ComposeResult:
+        sc = self._saved_config
         with Container(id="modal-container"):
             yield Label("⚙  Configure AI Provider", id="modal-title")
 
             with RadioSet(id="provider-radio"):
                 yield RadioButton(
                     "Anthropic  (claude-sonnet-4-6 + web search)",
-                    value=True,
+                    value=self._provider_idx == 0,
                 )
-                yield RadioButton("Ollama Local  (localhost:11434)")
-                yield RadioButton("Ollama Cloud / Custom Endpoint")
+                yield RadioButton(
+                    "Ollama Local  (localhost:11434)",
+                    value=self._provider_idx == 1,
+                )
+                yield RadioButton(
+                    "Ollama Cloud / Custom Endpoint",
+                    value=self._provider_idx == 2,
+                )
 
-            # ── Anthropic section ──────────────────────────────────
             with Container(id="anthropic-section", classes="section"):
                 yield Label("Anthropic API Key", classes="field-label")
                 yield Input(
@@ -118,33 +162,37 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
                     classes="field-input",
                 )
 
-            # ── Ollama local section ───────────────────────────────
             with Container(id="ollama-local-section", classes="section"):
                 yield Label("Model name", classes="field-label")
                 yield Input(
-                    value="llama3.2",
+                    value=(sc.model if sc and self._provider_idx == 1 else "llama3.2"),
                     placeholder="llama3.2",
                     id="ol-local-model",
                     classes="field-input",
                 )
                 yield Label("Port  (default 11434)", classes="field-label")
                 yield Input(
-                    value="11434",
+                    value=(
+                        _extract_port(sc.base_url)
+                        if sc and self._provider_idx == 1 and sc.base_url
+                        else "11434"
+                    ),
                     placeholder="11434",
                     id="ol-local-port",
                     classes="field-input",
                 )
 
-            # ── Ollama cloud / custom section ──────────────────────
             with Container(id="ollama-cloud-section", classes="section"):
                 yield Label("Base URL", classes="field-label")
                 yield Input(
+                    value=(sc.base_url or "" if sc and self._provider_idx == 2 else ""),
                     placeholder="https://your-ollama-host.com",
                     id="ol-cloud-url",
                     classes="field-input",
                 )
                 yield Label("Model name", classes="field-label")
                 yield Input(
+                    value=(sc.model or "" if sc and self._provider_idx == 2 else ""),
                     placeholder="llama3.2",
                     id="ol-cloud-model",
                     classes="field-input",
@@ -153,6 +201,7 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
                     "API Key  (leave blank if not required)", classes="field-label"
                 )
                 yield Input(
+                    value=(sc.api_key or "" if sc and self._provider_idx == 2 else ""),
                     placeholder="(optional)",
                     password=True,
                     id="ol-cloud-key",
@@ -162,9 +211,9 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
             yield Button("Continue →", variant="primary", id="submit-btn")
 
     def on_mount(self) -> None:
-        # Hide non-Anthropic sections on first load
-        self.query_one("#ollama-local-section").display = False
-        self.query_one("#ollama-cloud-section").display = False
+        self.query_one("#anthropic-section").display = self._provider_idx == 0
+        self.query_one("#ollama-local-section").display = self._provider_idx == 1
+        self.query_one("#ollama-cloud-section").display = self._provider_idx == 2
 
     @on(RadioSet.Changed, "#provider-radio")
     def _on_provider_changed(self, event: RadioSet.Changed) -> None:
@@ -177,6 +226,7 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
     def _submit(self) -> None:
         config = self._build_config()
         if config:
+            save_config(config)
             self.dismiss(config)
 
     def _build_config(self) -> Optional[ProviderConfig]:
@@ -278,6 +328,7 @@ class StatusBar(Widget):
     DEFAULT_CSS = """
     StatusBar {
         height: 5;
+        dock: bottom;
         border-top: wide $primary;
         padding: 1 2;
         background: $surface-darken-1;
@@ -318,7 +369,7 @@ class StatusBar(Widget):
             )
         with Container(id="hint-row"):
             yield Label(
-                "[E]xport  [Q]uit  [R]eset  [Tab] focus  [↑↓] scroll",
+                "[E]xport  [C]onfigure  [Q]uit  [Tab] focus  [↑↓] scroll",
                 id="hints",
                 markup=False,
             )
@@ -368,10 +419,10 @@ Screen {
 }
 
 #input-section {
-    height: 5;
+    height: 9;
     background: $panel;
     border-bottom: solid $primary-darken-2;
-    padding: 0 2;
+    padding: 1 2;
     layout: horizontal;
     align: left middle;
 }
@@ -384,15 +435,12 @@ Screen {
 
 #idea-input {
     width: 1fr;
+    height: 1fr;
     margin-right: 2;
 }
 
 #run-btn {
     width: 20;
-}
-
-#reset-btn {
-    width: 12;
 }
 
 #main-area {
@@ -424,9 +472,9 @@ class ProductResearchApp(App):
         Binding("ctrl+q", "quit", "Quit", show=False),
         Binding("q", "quit", "Quit", show=False),
         Binding("e", "export", "Export"),
-        Binding("r", "reset", "Reset"),
+        Binding("c", "configure", "Configure"),
         Binding("tab", "toggle_focus", "Toggle focus"),
-        Binding("enter", "run_research", "Run", show=False, priority=True),
+        Binding("ctrl+enter", "run_research", "Run", show=False, priority=True),
     ]
 
     def __init__(self) -> None:
@@ -435,7 +483,10 @@ class ProductResearchApp(App):
         self._results: Dict[str, str] = {}
         self._current_idea: str = ""
         self._running: bool = False
-        self._output_buffer: str = ""
+        self._output_buffer: str = ""   # full accumulated text (for export)
+        self._stage_buffer: str = ""    # current stage only (for live display)
+        self._pending_refresh: bool = False
+        self._last_flush_time: float = 0.0
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -445,13 +496,9 @@ class ProductResearchApp(App):
             yield Label(VERSION, id="header-provider")
 
         with Container(id="input-section"):
-            yield Label("Idea:", id="idea-label")
-            yield Input(
-                placeholder="e.g. AI-powered code review tool for solo developers",
-                id="idea-input",
-            )
-            yield Button("Run Research ▶", variant="primary", id="run-btn")
-            yield Button("Reset ↺", variant="default", id="reset-btn")
+            yield Label("💡", id="idea-label")
+            yield IdeaInput()
+            yield Button("▶ Research", variant="primary", id="run-btn")
 
         with Horizontal(id="main-area"):
             yield StagesSidebar()
@@ -467,6 +514,15 @@ class ProductResearchApp(App):
 
     @work
     async def _show_setup_modal(self) -> None:
+        saved = load_config()
+        if saved:
+            self._config = saved
+            self.query_one("#header-provider", Label).update(
+                f"{VERSION}  ·  {saved.display_name}"
+            )
+            self.query_one("#idea-input", IdeaInput).focus()
+            return
+
         prefill = os.environ.get("ANTHROPIC_API_KEY", "")
         config: Optional[ProviderConfig] = await self.push_screen_wait(
             ProviderSetupModal(prefill_key=prefill)
@@ -476,20 +532,12 @@ class ProductResearchApp(App):
             self.query_one("#header-provider", Label).update(
                 f"{VERSION}  ·  {config.display_name}"
             )
-        self.query_one("#idea-input", Input).focus()
+        self.query_one("#idea-input", IdeaInput).focus()
 
     # ── Input handlers ────────────────────────────────────────────────────────
 
     @on(Button.Pressed, "#run-btn")
     def _on_run_pressed(self) -> None:
-        self.action_run_research()
-
-    @on(Button.Pressed, "#reset-btn")
-    def _on_reset_pressed(self) -> None:
-        self.action_reset()
-
-    @on(Input.Submitted, "#idea-input")
-    def _on_input_submitted(self) -> None:
         self.action_run_research()
 
     # ── Actions ───────────────────────────────────────────────────────────────
@@ -502,7 +550,7 @@ class ProductResearchApp(App):
             else:
                 self.notify("Research already in progress…", severity="warning")
                 return
-        idea = self.query_one("#idea-input", Input).value.strip()
+        idea = self.query_one("#idea-input", IdeaInput).text.strip()
         if not idea:
             self.notify("Please enter a product idea first.", severity="error")
             self._set_status("⚠  Please enter a product idea first.")
@@ -519,8 +567,13 @@ class ProductResearchApp(App):
         self._running = True
         self.query_one(StagesSidebar).reset()
         self.query_one(StatusBar).reset()
-        self._output_buffer = ""
-        self._update_output(f"# Product Research: {idea}\n\n")
+        self._output_buffer = f"# Product Research: {idea}\n\n"
+        self._stage_buffer = f"# Product Research: {idea}\n\n"
+        self._pending_refresh = False
+        try:
+            self.query_one("#output-md", Markdown).update(self._stage_buffer)
+        except Exception:
+            pass
         self.notify(f"Starting research for: {idea[:50]}", timeout=3)
         self._run_all_stages()
 
@@ -534,21 +587,21 @@ class ProductResearchApp(App):
         except Exception as exc:
             self._set_status(f"✗  Export failed: {exc}")
 
-    def action_reset(self) -> None:
-        if self._running:
-            self._running = False
-            self.notify("Research cancelled.", severity="warning", timeout=3)
-        self._results = {}
-        self._current_idea = ""
-        self._output_buffer = ""
-        self.query_one(StagesSidebar).reset()
-        self.query_one(StatusBar).reset()
-        self._update_output("")
-        self.query_one("#idea-input", Input).value = ""
-        self.query_one("#idea-input", Input).focus()
+    @work
+    async def action_configure(self) -> None:
+        saved = load_config()
+        prefill = os.environ.get("ANTHROPIC_API_KEY", "")
+        config: Optional[ProviderConfig] = await self.push_screen_wait(
+            ProviderSetupModal(saved_config=saved, prefill_key=prefill)
+        )
+        if config:
+            self._config = config
+            self.query_one("#header-provider", Label).update(
+                f"{VERSION}  ·  {config.display_name}"
+            )
 
     def action_toggle_focus(self) -> None:
-        inp = self.query_one("#idea-input", Input)
+        inp = self.query_one("#idea-input", IdeaInput)
         scroll = self.query_one("#output-scroll")
         if inp.has_focus:
             scroll.focus()
@@ -571,7 +624,12 @@ class ProductResearchApp(App):
                 status_bar.set_status(f"⟳  {stage.name}…")
                 status_bar.set_progress(idx)
 
-                self._append_output(f"\n\n## {stage.name}\n\n")
+                self._output_buffer += f"\n\n## {stage.name}\n\n"
+                self._stage_buffer = f"## {stage.name}\n\n"
+                try:
+                    self.query_one("#output-md", Markdown).update(self._stage_buffer)
+                except Exception:
+                    pass
 
                 prompt = stage.prompt_template.format(idea=self._current_idea)
                 stage_text = ""
@@ -644,8 +702,18 @@ class ProductResearchApp(App):
 
     def _append_output(self, chunk: str) -> None:
         self._output_buffer += chunk
+        self._stage_buffer += chunk
+        if not self._pending_refresh:
+            self._pending_refresh = True
+            elapsed = time.monotonic() - self._last_flush_time
+            delay = max(0.0, 0.15 - elapsed)
+            self.set_timer(delay, self._flush_output)
+
+    def _flush_output(self) -> None:
+        self._pending_refresh = False
+        self._last_flush_time = time.monotonic()
         try:
-            self.query_one("#output-md", Markdown).update(self._output_buffer)
+            self.query_one("#output-md", Markdown).update(self._stage_buffer)
             self.query_one("#output-scroll").scroll_end(animate=False)
         except Exception:
             pass
