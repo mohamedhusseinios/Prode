@@ -74,8 +74,12 @@ async def _stream_anthropic(
     prompt: str,
 ) -> AsyncGenerator[tuple[str, str], None]:
     import anthropic
+    import httpx
 
-    client = anthropic.AsyncAnthropic(api_key=config.api_key)
+    client = anthropic.AsyncAnthropic(
+        api_key=config.api_key,
+        timeout=httpx.Timeout(timeout=120.0, connect=10.0),
+    )
     try:
         async with client.messages.stream(
             model=config.effective_model,
@@ -112,6 +116,8 @@ async def _stream_anthropic(
 
     except anthropic.RateLimitError:
         yield ("rate_limit", "")
+    except anthropic.APITimeoutError:
+        yield ("rate_limit", "")  # treat timeout as retryable, same as rate-limit
     except anthropic.APIConnectionError as exc:
         yield ("error", f"Connection error: {exc}")
     except anthropic.APIStatusError as exc:

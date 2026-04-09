@@ -10,6 +10,7 @@ import time
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
+from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -21,10 +22,10 @@ from textual.widgets import (
     Button,
     Input,
     Label,
-    Markdown,
     ProgressBar,
     RadioButton,
     RadioSet,
+    Static,
     TextArea,
 )
 from textual.widget import Widget
@@ -443,6 +444,11 @@ Screen {
     width: 20;
 }
 
+#next-btn {
+    width: 20;
+    display: none;
+}
+
 #main-area {
     layout: horizontal;
     height: 1fr;
@@ -487,6 +493,8 @@ class ProductResearchApp(App):
         self._stage_buffer: str = ""    # current stage only (for live display)
         self._pending_refresh: bool = False
         self._last_flush_time: float = 0.0
+        self._advance_event: asyncio.Event = asyncio.Event()
+        self._is_last_stage: bool = False
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -499,11 +507,12 @@ class ProductResearchApp(App):
             yield Label("💡", id="idea-label")
             yield IdeaInput()
             yield Button("▶ Research", variant="primary", id="run-btn")
+            yield Button("Next →", variant="success", id="next-btn")
 
         with Horizontal(id="main-area"):
             yield StagesSidebar()
             with Container(id="output-scroll"):
-                yield Markdown("", id="output-md")
+                yield Static("", id="output-md")
 
         yield StatusBar()
 
@@ -540,6 +549,17 @@ class ProductResearchApp(App):
     def _on_run_pressed(self) -> None:
         self.action_run_research()
 
+    @on(Button.Pressed, "#next-btn")
+    def _on_next_pressed(self) -> None:
+        btn = self.query_one("#next-btn", Button)
+        btn.display = False
+        btn.label = "Next →"
+        if self._is_last_stage:
+            self._is_last_stage = False
+            self.action_export()
+        else:
+            self._advance_event.set()
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def action_run_research(self) -> None:
@@ -566,12 +586,19 @@ class ProductResearchApp(App):
         self._results = {}
         self._running = True
         self.query_one(StagesSidebar).reset()
+        self._is_last_stage = False
+        try:
+            btn = self.query_one("#next-btn", Button)
+            btn.label = "Next →"
+            btn.display = False
+        except Exception:
+            pass
         self.query_one(StatusBar).reset()
         self._output_buffer = f"# Product Research: {idea}\n\n"
         self._stage_buffer = f"# Product Research: {idea}\n\n"
         self._pending_refresh = False
         try:
-            self.query_one("#output-md", Markdown).update(self._stage_buffer)
+            self.query_one("#output-md", Static).update(RichMarkdown(self._stage_buffer))
         except Exception:
             pass
         self.notify(f"Starting research for: {idea[:50]}", timeout=3)
@@ -619,6 +646,7 @@ class ProductResearchApp(App):
         try:
             sidebar = self.query_one(StagesSidebar)
             status_bar = self.query_one(StatusBar)
+            self._advance_event.clear()
             for idx, stage in enumerate(STAGES):
                 sidebar.set_status(stage.id, "running")
                 status_bar.set_status(f"⟳  {stage.name}…")
@@ -627,7 +655,7 @@ class ProductResearchApp(App):
                 self._output_buffer += f"\n\n## {stage.name}\n\n"
                 self._stage_buffer = f"## {stage.name}\n\n"
                 try:
-                    self.query_one("#output-md", Markdown).update(self._stage_buffer)
+                    self.query_one("#output-md", Static).update(self._stage_buffer)
                 except Exception:
                     pass
 
@@ -679,9 +707,21 @@ class ProductResearchApp(App):
                 self._results[stage.id] = stage_text
                 sidebar.set_status(stage.id, "done" if success else "failed")
                 status_bar.set_progress(idx + 1)
+                self._render_markdown()  # final styled render after streaming ends
 
-            status_bar.set_status("✓  Research complete — press E to export")
-            self.notify("Research complete! Press E to export.", timeout=5)
+                if idx < len(STAGES) - 1:
+                    self._advance_event.clear()
+                    self.query_one("#next-btn", Button).display = True
+                    status_bar.set_status(f"✓  {stage.name} complete — click Next to continue")
+                    await self._advance_event.wait()
+                else:
+                    # Last stage — show Save button for user to export manually
+                    self._is_last_stage = True
+                    btn = self.query_one("#next-btn", Button)
+                    btn.label = "💾 Save"
+                    btn.display = True
+                    status_bar.set_status("✓  Research complete — click Save to export")
+                    self.notify("Research complete! Click Save to export.", timeout=5)
 
         except Exception as exc:
             self._append_output(f"\n\n> ✗ **Unexpected error:** {exc}\n\n")
@@ -696,7 +736,7 @@ class ProductResearchApp(App):
     def _update_output(self, content: str) -> None:
         self._output_buffer = content
         try:
-            self.query_one("#output-md", Markdown).update(content)
+            self.query_one("#output-md", Static).update(RichMarkdown(content))
         except Exception:
             pass
 
@@ -705,18 +745,22 @@ class ProductResearchApp(App):
         self._stage_buffer += chunk
         if not self._pending_refresh:
             self._pending_refresh = True
-            elapsed = time.monotonic() - self._last_flush_time
-            delay = max(0.0, 0.15 - elapsed)
-            self.set_timer(delay, self._flush_output)
+            self.call_after_refresh(self._flush_output)
 
     def _flush_output(self) -> None:
         self._pending_refresh = False
-        self._last_flush_time = time.monotonic()
         try:
-            self.query_one("#output-md", Markdown).update(self._stage_buffer)
+            self.query_one("#output-md", Static).update(self._stage_buffer)
             self.query_one("#output-scroll").scroll_end(animate=False)
         except Exception:
             pass
+
+    def _render_markdown(self) -> None:
+        """Apply full RichMarkdown render after stage completes."""
+        try:
+            self.query_one("#output-md", Static).update(RichMarkdown(self._stage_buffer))
+        except Exception:
+            pass  # keep plain text if markdown render fails
 
     def _set_status(self, text: str) -> None:
         try:
