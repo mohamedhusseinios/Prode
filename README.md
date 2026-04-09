@@ -70,7 +70,7 @@ A terminal TUI that runs a full **8-stage product research pipeline** against an
 
 ```bash
 # 1. Clone / enter the project directory
-cd product_researcher
+cd Prode
 
 # 2. Create a virtual environment (recommended)
 python3 -m venv .venv
