@@ -384,6 +384,10 @@ Screen {
     width: 20;
 }
 
+#reset-btn {
+    width: 12;
+}
+
 #main-area {
     layout: horizontal;
     height: 1fr;
@@ -440,6 +444,7 @@ class ProductResearchApp(App):
                 id="idea-input",
             )
             yield Button("Run Research ▶", variant="primary", id="run-btn")
+            yield Button("Reset ↺", variant="default", id="reset-btn")
 
         with Horizontal(id="main-area"):
             yield StagesSidebar()
@@ -450,7 +455,11 @@ class ProductResearchApp(App):
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    async def on_mount(self) -> None:
+    def on_mount(self) -> None:
+        self._show_setup_modal()
+
+    @work
+    async def _show_setup_modal(self) -> None:
         prefill = os.environ.get("ANTHROPIC_API_KEY", "")
         config: Optional[ProviderConfig] = await self.push_screen_wait(
             ProviderSetupModal(prefill_key=prefill)
@@ -468,6 +477,10 @@ class ProductResearchApp(App):
     def _on_run_pressed(self) -> None:
         self.action_run_research()
 
+    @on(Button.Pressed, "#reset-btn")
+    def _on_reset_pressed(self) -> None:
+        self.action_reset()
+
     @on(Input.Submitted, "#idea-input")
     def _on_input_submitted(self) -> None:
         self.action_run_research()
@@ -476,12 +489,19 @@ class ProductResearchApp(App):
 
     def action_run_research(self) -> None:
         if self._running:
-            return
+            # Auto-heal: if no worker is actually running, the flag is stale
+            if not any(w.name == "research" and w.is_running for w in self.workers):
+                self._running = False
+            else:
+                self.notify("Research already in progress…", severity="warning")
+                return
         idea = self.query_one("#idea-input", Input).value.strip()
         if not idea:
+            self.notify("Please enter a product idea first.", severity="error")
             self._set_status("⚠  Please enter a product idea first.")
             return
         if not self._config:
+            self.notify("No provider configured — please restart and set up a provider.", severity="error")
             self._set_status("⚠  No provider configured.")
             return
         self._current_idea = idea
@@ -491,6 +511,7 @@ class ProductResearchApp(App):
         self.query_one(StatusBar).reset()
         self._output_buffer = ""
         self._update_output(f"# Product Research: {idea}\n\n")
+        self.notify(f"Starting research for: {idea[:50]}", timeout=3)
         self._run_all_stages()
 
     def action_export(self) -> None:
@@ -505,7 +526,8 @@ class ProductResearchApp(App):
 
     def action_reset(self) -> None:
         if self._running:
-            return
+            self._running = False
+            self.notify("Research cancelled.", severity="warning", timeout=3)
         self._results = {}
         self._current_idea = ""
         self._output_buffer = ""
@@ -531,62 +553,71 @@ class ProductResearchApp(App):
     @work(name="research")
     async def _run_all_stages(self) -> None:
         """Sequentially stream all 8 research stages."""
-        sidebar = self.query_one(StagesSidebar)
-        status_bar = self.query_one(StatusBar)
+        try:
+            sidebar = self.query_one(StagesSidebar)
+            status_bar = self.query_one(StatusBar)
+            for idx, stage in enumerate(STAGES):
+                sidebar.set_status(stage.id, "running")
+                status_bar.set_status(f"⟳  {stage.name}…")
+                status_bar.set_progress(idx)
 
-        for idx, stage in enumerate(STAGES):
-            sidebar.set_status(stage.id, "running")
-            status_bar.set_status(f"⟳  {stage.name}…")
-            status_bar.set_progress(idx)
+                self._append_output(f"\n\n## {stage.name}\n\n")
 
-            self._append_output(f"\n\n## {stage.name}\n\n")
+                prompt = stage.prompt_template.format(idea=self._current_idea)
+                stage_text = ""
+                success = True
+                last_etype = ""
 
-            prompt = stage.prompt_template.format(idea=self._current_idea)
-            stage_text = ""
-            success = True
-            last_etype = ""
+                while True:
+                    async for etype, content in stream_stage(self._config, prompt):
+                        last_etype = etype
 
-            while True:
-                async for etype, content in stream_stage(self._config, prompt):
-                    last_etype = etype
+                        if etype == "text":
+                            stage_text += content
+                            self._append_output(content)
 
-                    if etype == "text":
-                        stage_text += content
-                        self._append_output(content)
+                        elif etype == "searching":
+                            status_bar.set_status("🌐  Searching the web…")
 
-                    elif etype == "searching":
-                        status_bar.set_status("🌐  Searching the web…")
+                        elif etype == "search_done":
+                            status_bar.set_status(f"⟳  {stage.name}…")
 
-                    elif etype == "search_done":
-                        status_bar.set_status(f"⟳  {stage.name}…")
+                        elif etype == "rate_limit":
+                            for secs in range(RATE_LIMIT_WAIT, 0, -1):
+                                status_bar.set_status(
+                                    f"⏳  Rate limited — retrying in {secs}s…"
+                                )
+                                await asyncio.sleep(1)
+                            break  # retry
 
-                    elif etype == "rate_limit":
-                        for secs in range(RATE_LIMIT_WAIT, 0, -1):
-                            status_bar.set_status(
-                                f"⏳  Rate limited — retrying in {secs}s…"
+                        elif etype == "error":
+                            self._append_output(
+                                f"\n\n> ⚠ **Error during {stage.name}:** {content}\n\n"
                             )
-                            await asyncio.sleep(1)
-                        break  # retry
+                            self.notify(f"Error — {stage.name}: {content[:120]}", severity="error", timeout=10)
+                            success = False
+                            break
 
-                    elif etype == "error":
-                        self._append_output(
-                            f"\n\n> ⚠ **Error during {stage.name}:** {content}\n\n"
-                        )
-                        success = False
-                        break
+                    else:
+                        break  # for-loop completed normally → done
 
-                else:
-                    break  # for-loop completed normally → done
+                    if last_etype == "error":
+                        break  # don't retry on hard errors
 
-                if last_etype == "error":
-                    break  # don't retry on hard errors
+                self._results[stage.id] = stage_text
+                sidebar.set_status(stage.id, "done" if success else "failed")
+                status_bar.set_progress(idx + 1)
 
-            self._results[stage.id] = stage_text
-            sidebar.set_status(stage.id, "done" if success else "failed")
-            status_bar.set_progress(idx + 1)
+            status_bar.set_status("✓  Research complete — press [E] to export")
+            self.notify("Research complete! Press E to export.", timeout=5)
 
-        self._running = False
-        status_bar.set_status("✓  Research complete — press [E] to export")
+        except Exception as exc:
+            self._append_output(f"\n\n> ✗ **Unexpected error:** {exc}\n\n")
+            status_bar.set_status(f"✗  Error: {exc}")
+            self.notify(f"Unexpected error: {exc}", severity="error", timeout=15)
+
+        finally:
+            self._running = False
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
