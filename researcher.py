@@ -3,8 +3,11 @@
 Supports two provider backends:
   - "anthropic" — Anthropic SDK with claude-sonnet-4-6 + built-in web search
   - "ollama"    — OpenAI-compatible API (local Ollama or any custom endpoint)
+                  Uses DuckDuckGo search to ground responses in current data.
 """
 
+import asyncio
+import re
 from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
@@ -128,6 +131,50 @@ async def _stream_anthropic(
         yield ("error", str(exc))
 
 
+# ─── Web search helper (used by Ollama path) ──────────────────────────────────
+
+
+async def _fetch_search_context(prompt: str, max_results: int = 5) -> str:
+    """Search DuckDuckGo for the idea in the prompt and return formatted results.
+
+    Extracts the bolded idea text (e.g. **My Idea**) from the prompt template,
+    runs a synchronous DDG search in a thread executor so it doesn't block the
+    async event loop, and returns a markdown-formatted context block.
+    """
+    from ddgs import DDGS
+
+    match = re.search(r"\*\*(.+?)\*\*", prompt)
+    query = match.group(1) if match else prompt[:120]
+
+    loop = asyncio.get_event_loop()
+
+    def _sync_search() -> list[dict]:
+        try:
+            with DDGS() as ddgs:
+                return list(ddgs.text(query, max_results=max_results))
+        except Exception:
+            return []
+
+    results = await loop.run_in_executor(None, _sync_search)
+    if not results:
+        return ""
+
+    lines = ["## Recent Web Search Results\n"]
+    for r in results:
+        title = r.get("title", "").strip()
+        body = r.get("body", "").strip()
+        href = r.get("href", "").strip()
+        if title:
+            lines.append(f"**{title}**")
+        if body:
+            lines.append(body)
+        if href:
+            lines.append(f"Source: {href}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ─── Ollama / OpenAI-compatible backend ───────────────────────────────────────
 
 
@@ -142,10 +189,18 @@ async def _stream_ollama(
         api_key=config.api_key or "ollama",  # Ollama ignores the key but SDK requires one
     )
     try:
+        yield ("searching", "")
+        search_context = await _fetch_search_context(prompt)
+        yield ("search_done", "")
+
+        system = OLLAMA_SYSTEM_PROMPT
+        if search_context:
+            system = system + "\n\n" + search_context
+
         response = await client.chat.completions.create(
             model=config.effective_model,
             messages=[
-                {"role": "system", "content": OLLAMA_SYSTEM_PROMPT},
+                {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
             stream=True,
