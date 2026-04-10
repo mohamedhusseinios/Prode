@@ -1,0 +1,112 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775770979826,
+  "projectRoot": "/Users/mohamedabdulrahman/Prode",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "requirements.txt"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pip",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "__pycache__": {
+      "path": "__pycache__",
+      "purpose": null,
+      "fileCount": 5,
+      "lastAccessed": 1775770979818,
+      "keyFiles": [
+        "config.cpython-314.pyc",
+        "exporter.cpython-314.pyc",
+        "main.cpython-314.pyc",
+        "researcher.cpython-314.pyc",
+        "stages.cpython-314.pyc"
+      ]
+    },
+    "venv": {
+      "path": "venv",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775770979820,
+      "keyFiles": [
+        "pyvenv.cfg"
+      ]
+    },
+    "venv/bin": {
+      "path": "venv/bin",
+      "purpose": "Executable scripts",
+      "fileCount": 14,
+      "lastAccessed": 1775770979821,
+      "keyFiles": [
+        "Activate.ps1",
+        "activate",
+        "activate.csh"
+      ]
+    },
+    "venv/lib": {
+      "path": "venv/lib",
+      "purpose": "Library code",
+      "fileCount": 0,
+      "lastAccessed": 1775770979821,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "main.py",
+      "accessCount": 61,
+      "lastAccessed": 1775778431171,
+      "type": "file"
+    },
+    {
+      "path": "researcher.py",
+      "accessCount": 7,
+      "lastAccessed": 1775778042627,
+      "type": "file"
+    },
+    {
+      "path": "exporter.py",
+      "accessCount": 5,
+      "lastAccessed": 1775774246132,
+      "type": "file"
+    },
+    {
+      "path": "stages.py",
+      "accessCount": 2,
+      "lastAccessed": 1775774098143,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
