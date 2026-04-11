@@ -646,7 +646,7 @@ class ProductResearchApp(App):
         try:
             sidebar = self.query_one(StagesSidebar)
             status_bar = self.query_one(StatusBar)
-            self._advance_event.clear()
+            self._advance_event = asyncio.Event()
             for idx, stage in enumerate(STAGES):
                 sidebar.set_status(stage.id, "running")
                 status_bar.set_status(f"⟳  {stage.name}…")
@@ -662,14 +662,12 @@ class ProductResearchApp(App):
                 prompt = stage.prompt_template.format(idea=self._current_idea)
                 stage_text = ""
                 success = True
-                last_etype = ""
                 retries = 0
                 MAX_RETRIES = 3
 
-                while True:
+                should_retry = True
+                while should_retry:
                     async for etype, content in stream_stage(self._config, prompt):
-                        last_etype = etype
-
                         if etype == "text":
                             stage_text += content
                             self._append_output(content)
@@ -687,14 +685,14 @@ class ProductResearchApp(App):
                                     f"\n\n> ⚠ **{stage.name} failed after {MAX_RETRIES} retries.**\n\n"
                                 )
                                 success = False
-                                last_etype = "error"
+                                should_retry = False
                                 break
                             for secs in range(RATE_LIMIT_WAIT, 0, -1):
                                 status_bar.set_status(
                                     f"⏳  Rate limited — retry {retries}/{MAX_RETRIES} in {secs}s…"
                                 )
                                 await asyncio.sleep(1)
-                            break  # retry
+                            break  # will retry
 
                         elif etype == "error":
                             self._append_output(
@@ -706,13 +704,10 @@ class ProductResearchApp(App):
                                 timeout=10,
                             )
                             success = False
+                            should_retry = False
                             break
-
                     else:
-                        break  # for-loop completed normally → done
-
-                    if last_etype == "error":
-                        break  # don't retry on hard errors
+                        should_retry = False  # stream completed normally
 
                 self._results[stage.id] = stage_text
                 sidebar.set_status(stage.id, "done" if success else "failed")
