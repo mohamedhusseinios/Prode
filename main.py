@@ -725,6 +725,8 @@ class ProductResearchApp(App):
                     self.call_from_thread(self._show_save_button)
                     status_bar.set_status("✓  Research complete — click Save to export")
                     self.notify("Research complete! Click Save to export.", timeout=5)
+                    await self._advance_event.wait()
+
 
         except Exception as exc:
             self._append_output(f"\n\n> ✗ **Unexpected error:** {exc}\n\n")

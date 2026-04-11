@@ -85,14 +85,14 @@
   "hotPaths": [
     {
       "path": "main.py",
-      "accessCount": 61,
-      "lastAccessed": 1775778431171,
+      "accessCount": 69,
+      "lastAccessed": 1775837799204,
       "type": "file"
     },
     {
       "path": "researcher.py",
-      "accessCount": 7,
-      "lastAccessed": 1775778042627,
+      "accessCount": 13,
+      "lastAccessed": 1775838036662,
       "type": "file"
     },
     {
@@ -103,9 +103,21 @@
     },
     {
       "path": "stages.py",
-      "accessCount": 2,
-      "lastAccessed": 1775774098143,
+      "accessCount": 3,
+      "lastAccessed": 1775837802736,
       "type": "file"
+    },
+    {
+      "path": "requirements.txt",
+      "accessCount": 3,
+      "lastAccessed": 1775838036415,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1775837822786,
+      "type": "directory"
     }
   ],
   "userDirectives": []
