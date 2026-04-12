@@ -1,0 +1,1 @@
+Verification passed: test_event.py deleted

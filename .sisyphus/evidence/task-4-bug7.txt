@@ -1,0 +1,8 @@
+Bug #7 Fix Verification: asyncio.get_event_loop() → asyncio.get_running_loop()
+================================================================================
+
+Fixed at line 151 (now line 153 after adding logging import):
+- BEFORE: loop = asyncio.get_event_loop()
+- AFTER:  loop = asyncio.get_running_loop()
+
+Verification: grep shows no occurrences of asyncio.get_event_loop in researcher.py

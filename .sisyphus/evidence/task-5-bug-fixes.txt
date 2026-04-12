@@ -1,0 +1,61 @@
+# Evidence for task-5-fixes
+
+## Bug #9 Fix (lines 28-29): Warn when corrupted config is discarded
+
+**Change**: Added logging import and warning in load_config() except block.
+
+**Before**:
+```python
+import json
+from pathlib import Path
+from dataclasses import asdict
+...
+except (json.JSONDecodeError, KeyError, TypeError):
+    return None
+```
+
+**After**:
+```python
+import json
+import logging
+from pathlib import Path
+from dataclasses import asdict
+
+logger = logging.getLogger(__name__)
+...
+except (json.JSONDecodeError, KeyError, TypeError) as exc:
+    logger.warning("Config file corrupted, resetting: %s", exc)
+    return None
+```
+
+## Bug #22 Fix (lines 32-34): Validate config before save
+
+**Change**: Added type check in save_config() before writing.
+
+**Before**:
+```python
+def save_config(config: ProviderConfig) -> None:
+    """Persist provider config to disk."""
+    CONFIG_PATH.write_text(json.dumps(asdict(config), indent=2))
+```
+
+**After**:
+```python
+def save_config(config: ProviderConfig) -> None:
+    """Persist provider config to disk."""
+    if not isinstance(config, ProviderConfig):
+        raise TypeError("config must be ProviderConfig")
+    CONFIG_PATH.write_text(json.dumps(asdict(config), indent=2))
+```
+
+## Verification
+
+```
+$ python3 -c "from config import load_config, save_config; print('OK')"
+OK
+```
+
+All acceptance criteria met:
+- [x] load_config() logs warning when config is corrupted
+- [x] save_config() validates input type
+- [x] python3 -c "from config import load_config, save_config; print('OK')" passes

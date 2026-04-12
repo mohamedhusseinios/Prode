@@ -7,6 +7,7 @@ Terminal TUI powered by Textual + Anthropic/Ollama + Web Search
 import asyncio
 import os
 import time
+from pathlib import Path
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
+    DirectoryTree,
     Input,
     Label,
     ProgressBar,
@@ -268,6 +270,93 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
         )
 
 
+# ─── Directory picker modal ───────────────────────────────────────────────────
+
+
+class DirectoryPickerModal(ModalScreen[str | None]):
+    """Modal for selecting a directory to export research results."""
+
+    DEFAULT_CSS = """
+    DirectoryPickerModal {
+        align: center middle;
+    }
+
+    #dir-picker-container {
+        width: 72;
+        height: 20;
+        background: $surface;
+        border: double $primary;
+        padding: 2 4;
+    }
+
+    #dir-picker-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+        color: $accent;
+    }
+
+    #dir-tree {
+        height: 12;
+        border: solid $primary-darken-2;
+        margin-bottom: 1;
+    }
+
+    #selected-path {
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+
+    #dir-btn-row {
+        height: auto;
+        align: right middle;
+    }
+
+    #dir-btn-row > Button {
+        margin-left: 1;
+    }
+    """
+
+    BINDINGS = [
+        ("enter", "confirm", "Export to this directory"),
+        ("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._selected_path: str = str(Path.home())
+
+    def compose(self) -> ComposeResult:
+        with Container(id="dir-picker-container"):
+            yield Label("📁  Choose Export Directory", id="dir-picker-title")
+            yield DirectoryTree(Path.home(), id="dir-tree")
+            yield Static(f"Selected: {self._selected_path}", id="selected-path")
+            with Horizontal(id="dir-btn-row"):
+                yield Button("Cancel", variant="default", id="cancel-btn")
+                yield Button("📂 Export", variant="success", id="select-btn")
+
+    @on(DirectoryTree.DirectorySelected)
+    def _on_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
+        self._selected_path = str(event.path)
+        self.query_one("#selected-path", Static).update(
+            f"Selected: {self._selected_path}"
+        )
+
+    @on(Button.Pressed, "#select-btn")
+    def _on_select(self) -> None:
+        self.dismiss(self._selected_path)
+
+    @on(Button.Pressed, "#cancel-btn")
+    def _on_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_confirm(self) -> None:
+        self.dismiss(self._selected_path)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ─── Stages sidebar ───────────────────────────────────────────────────────────
 
 
@@ -376,7 +465,7 @@ class StatusBar(Widget):
             )
         with Container(id="hint-row"):
             yield Label(
-                "[E]xport  [C]onfigure  [Y]olo  [Q]uit  [Tab] focus  [↑↓] scroll",
+                "[E]xport…  [C]onfigure  [Y]olo  [Q]uit  [Tab] focus  [↑↓] scroll",
                 id="hints",
                 markup=False,
             )
@@ -423,6 +512,22 @@ Screen {
 
 #header-provider {
     color: $text-muted;
+}
+
+#close-btn {
+    dock: right;
+    width: 3;
+    height: 3;
+    color: $text-muted;
+    background: transparent;
+    border: none;
+}
+#close-btn:hover {
+    background: $error-darken-3;
+    color: $text;
+}
+#close-btn:focus {
+    text-style: bold;
 }
 
 #input-section {
@@ -509,6 +614,7 @@ class ProductResearchApp(App):
         self._last_flush_time: float = 0.0
         self._advance_event: asyncio.Event | None = None
         self._is_last_stage: bool = False
+        self._quitting: bool = False
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -516,6 +622,7 @@ class ProductResearchApp(App):
         with Container(id="app-header"):
             yield Label("🔭  Prode  — Research before you build", id="header-title")
             yield Label(VERSION, id="header-provider")
+            yield Button("✕", id="close-btn", variant="default")
 
         with Container(id="input-section"):
             yield Label("💡", id="idea-label")
@@ -569,6 +676,10 @@ class ProductResearchApp(App):
     @on(Button.Pressed, "#yolo-btn")
     def _on_yolo_pressed(self) -> None:
         self.action_toggle_yolo()
+
+    @on(Button.Pressed, "#close-btn")
+    def _on_close_pressed(self) -> None:
+        self._cancel_and_quit()
 
     @on(Button.Pressed, "#next-btn")
     def _on_next_pressed(self) -> None:
@@ -634,15 +745,27 @@ class ProductResearchApp(App):
         self.notify(f"Starting research for: {display_idea}", timeout=3)
         self._run_all_stages()
 
-    def action_export(self) -> None:
+    async def _do_export(self) -> None:
+        """Plain async method to perform export with directory picker."""
         if not self._results:
             self._set_status("⚠  Nothing to export yet.")
             return
         try:
-            path = export_results(self._current_idea, self._results)
+            chosen_dir = await self.push_screen_wait(DirectoryPickerModal())
+            if chosen_dir is None:
+                self._set_status("Export cancelled")
+                return
+            path = export_results(
+                self._current_idea, self._results, output_dir=chosen_dir
+            )
             self._set_status(f"✓  Saved to {path}")
         except Exception as exc:
             self._set_status(f"✗  Export failed: {exc}")
+
+    @work
+    async def action_export(self) -> None:
+        """@work wrapper for user-triggered export (E key, Save button)."""
+        await self._do_export()
 
     @work
     async def action_configure(self) -> None:
@@ -677,8 +800,18 @@ class ProductResearchApp(App):
         else:
             inp.focus()
 
-    def action_quit(self) -> None:
+    def _cancel_and_quit(self) -> None:
+        if self._quitting:
+            return
+        self._quitting = True
+        for worker in self.workers:
+            if worker.name == "research" and worker.is_running:
+                worker.cancel()
+                break
         self.exit()
+
+    def action_quit(self) -> None:
+        self._cancel_and_quit()
 
     # ── Research worker ───────────────────────────────────────────────────────
 
@@ -793,7 +926,7 @@ class ProductResearchApp(App):
                             "✓  Research complete — saving automatically…"
                         )
                         self.notify("Research complete! Exporting results…", timeout=4)
-                        self.action_export()
+                        await self._do_export()
                     else:
                         # Last stage — show Save button for user to export manually
                         self._is_last_stage = True
@@ -804,6 +937,11 @@ class ProductResearchApp(App):
                         self.notify(
                             "Research complete! Click Save to export.", timeout=5
                         )
+
+        except asyncio.CancelledError:
+            self._append_output("\n\n> ✗ **Cancelled.**\n\n")
+            self._set_status("✗  Cancelled")
+            self.notify("Research cancelled.", severity="warning", timeout=5)
 
         except Exception as exc:
             self._append_output(f"\n\n> ✗ **Unexpected error:** {exc}\n\n")

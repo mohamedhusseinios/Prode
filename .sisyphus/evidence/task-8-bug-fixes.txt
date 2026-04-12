@@ -1,0 +1,67 @@
+Task: Fix 12 bugs in main.py worker/helper region (lines 570-819)
+Date: 2026-04-11
+
+## Fixes Applied (top-to-bottom):
+
+### Bug #1 (line 806): Guard status_bar in exception handler
+- Changed `status_bar.set_status(f"✗  Error: {exc}")` to `self._set_status(f"✗  Error: {exc}")`
+- Uses helper that safely handles missing widget instead of direct reference to local variable
+
+### Bug #2 (lines 709-713): Reset stage_text on rate-limit retry
+- Added `if retries > 0:` block inside `while should_retry:` loop
+- Resets `stage_text = ""` and `self._stage_buffer = f"## {stage.name}\n\n"` before retrying
+- Prevents garbled/stitched output from previous attempt bleeding into retry
+
+### Bug #4 (lines 839-847): Render markdown during flush
+- Changed `_flush_output()` from plain text `update(self._stage_buffer)` to
+  `update(RichMarkdown(self._stage_buffer))`
+- Markdown now renders inline during streaming, not only at end of each stage
+
+### Bug #6 (line 759): Only increment progress bar on success
+- Changed `status_bar.set_progress(idx + 1)` to
+  `status_bar.set_progress(idx + 1 if success else idx)`
+- Failed stages no longer advance the progress bar
+
+### Bug #10 (line 758): Stop sidebar spinner on failure
+- VERIFIED: Already handled — sidebar `set_status(stage.id, "failed")` triggers
+  the `else` branch in render() which shows ✗ in red and stops the spinner
+
+### Bug #13 (lines 843-845): Stop auto-scrolling when user scrolls up
+- Changed unconditional `scroll_end()` to conditional:
+  `if scroll.is_vertical_scroll_end: scroll.scroll_end(animate=False)`
+- Only auto-scrolls if user is at the bottom of the output
+
+### Bug #14 (lines 619, 629, 699, 827, 866): Add noqa comments to bare excepts
+- All 10 `except Exception:` blocks now have `# noqa: BLE001 — widget may not exist yet`
+- Previously only 2 had noqa comments, now all 10 do
+
+### Bug #16 (line 734): Add exponential backoff
+- Changed fixed `RATE_LIMIT_WAIT` countdown to exponential backoff:
+  `wait_time = RATE_LIMIT_WAIT * (2 ** (retries - 1))`
+- Retry 1: 5s, Retry 2: 10s, Retry 3: 20s
+
+### Bug #18 (lines 780-787): Add timeout to _advance_event.wait()
+- Wrapped `await self._advance_event.wait()` in `asyncio.wait_for(..., timeout=300)`
+- Added `except asyncio.TimeoutError:` handler with status message
+- Prevents indefinite hang if user never clicks Next
+
+### Bug #20 (lines 760-763): Show failure notification in yolo mode
+- Added check after sidebar status update:
+  `if self._yolo_mode and not success: self.notify(f"Stage failed: {stage.name}", ...)`
+- Yolo users now get visible error notifications for failed stages
+
+### Bug #21 (lines 857-861): Clear partial markdown on render failure
+- Changed `_render_markdown()` fallback from `pass` (keep stale rendered content)
+  to explicit `self.query_one("#output-md", Static).update(self._stage_buffer)`
+- If RichMarkdown rendering fails, falls back to plain text instead of showing
+  stale/broken markdown
+
+### Bug #26 (line 631): Add ellipsis to truncated notification
+- Changed `self.notify(f"Starting research for: {idea[:50]}")` to:
+  `display_idea = idea if len(idea) <= 50 else idea[:47] + "..."`
+  `self.notify(f"Starting research for: {display_idea}")`
+- No more abrupt truncation; ellipsis indicates continuation
+
+## Verification:
+- `python3 -m py_compile main.py` — PASSED
+- All LSP errors are pre-existing (missing imports, type narrowing) — none introduced by fixes

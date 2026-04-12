@@ -1,0 +1,18 @@
+Bug #3 Fix Verification: Add APITimeoutError to openai import and catch
+========================================================================
+
+1. Added APITimeoutError to import at line 194:
+   - BEFORE: from openai import AsyncOpenAI, APIConnectionError, RateLimitError, APIStatusError
+   - AFTER:  from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, RateLimitError, APIStatusError
+
+2. Added catch block after RateLimitError (lines 232-233):
+   - except RateLimitError:
+   -     yield ("rate_limit", "")
+   - except APITimeoutError:
+   -     yield ("rate_limit", "")
+   - except APIConnectionError as exc:
+
+Verification: grep shows 3 occurrences of APITimeoutError in researcher.py:
+  - Line 129: anthropic.APITimeoutError (existing)
+  - Line 194: APITimeoutError in import
+  - Line 232: except APITimeoutError block

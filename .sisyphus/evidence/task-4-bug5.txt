@@ -1,0 +1,14 @@
+Bug #5 Fix Verification: Add logging for search failures
+==========================================================
+
+1. Added import at module level (line 10):
+   - import logging
+
+2. Added logger instance (line 14):
+   - logger = logging.getLogger(__name__)
+
+3. Updated except block at line 160-162 (was line 155):
+   - BEFORE: except Exception: return []
+   - AFTER:  except Exception as exc: logger.warning("Search failed: %s", exc); return []
+
+Verification: grep shows logger.warning present in researcher.py

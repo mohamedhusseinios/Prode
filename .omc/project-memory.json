@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775770979826,
+  "lastScanned": 1775909200409,
   "projectRoot": "/Users/mohamedabdulrahman/Prode",
   "techStack": {
     "languages": [
@@ -45,7 +45,7 @@
       "path": "__pycache__",
       "purpose": null,
       "fileCount": 5,
-      "lastAccessed": 1775770979818,
+      "lastAccessed": 1775909200402,
       "keyFiles": [
         "config.cpython-314.pyc",
         "exporter.cpython-314.pyc",
@@ -57,8 +57,8 @@
     "venv": {
       "path": "venv",
       "purpose": null,
-      "fileCount": 2,
-      "lastAccessed": 1775770979820,
+      "fileCount": 3,
+      "lastAccessed": 1775909200403,
       "keyFiles": [
         "pyvenv.cfg"
       ]
@@ -66,8 +66,8 @@
     "venv/bin": {
       "path": "venv/bin",
       "purpose": "Executable scripts",
-      "fileCount": 14,
-      "lastAccessed": 1775770979821,
+      "fileCount": 15,
+      "lastAccessed": 1775909200404,
       "keyFiles": [
         "Activate.ps1",
         "activate",
@@ -77,16 +77,16 @@
     "venv/lib": {
       "path": "venv/lib",
       "purpose": "Library code",
-      "fileCount": 0,
-      "lastAccessed": 1775770979821,
+      "fileCount": 1,
+      "lastAccessed": 1775909200405,
       "keyFiles": []
     }
   },
   "hotPaths": [
     {
       "path": "main.py",
-      "accessCount": 69,
-      "lastAccessed": 1775837799204,
+      "accessCount": 80,
+      "lastAccessed": 1775909538453,
       "type": "file"
     },
     {
@@ -102,6 +102,12 @@
       "type": "file"
     },
     {
+      "path": "",
+      "accessCount": 4,
+      "lastAccessed": 1775909440807,
+      "type": "directory"
+    },
+    {
       "path": "stages.py",
       "accessCount": 3,
       "lastAccessed": 1775837802736,
@@ -114,10 +120,10 @@
       "type": "file"
     },
     {
-      "path": "",
-      "accessCount": 2,
-      "lastAccessed": 1775837822786,
-      "type": "directory"
+      "path": "config.py",
+      "accessCount": 1,
+      "lastAccessed": 1775909460785,
+      "type": "file"
     }
   ],
   "userDirectives": []

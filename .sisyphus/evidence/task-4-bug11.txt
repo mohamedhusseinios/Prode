@@ -1,0 +1,17 @@
+Bug #11 Fix Verification: Make search events conditional
+========================================================
+
+Fixed at lines 207-210 (was lines 192-194):
+
+- BEFORE:
+  yield ("searching", "")
+  search_context = await _fetch_search_context(prompt)
+  yield ("search_done", "")
+
+- AFTER:
+  yield ("searching", "")
+  search_context = await _fetch_search_context(prompt)
+  if search_context:
+      yield ("search_done", "")
+
+Verification: grep shows "if search_context:" conditional at lines 207 and 211
