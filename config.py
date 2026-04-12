@@ -5,8 +5,11 @@ API keys are stored locally — never committed to git.
 """
 
 import json
+import logging
 from pathlib import Path
 from dataclasses import asdict
+
+logger = logging.getLogger(__name__)
 
 from researcher import ProviderConfig
 
@@ -25,12 +28,15 @@ def load_config() -> ProviderConfig | None:
             api_key=data.get("api_key"),
             base_url=data.get("base_url"),
         )
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        logger.warning("Config file corrupted, resetting: %s", exc)
         return None
 
 
 def save_config(config: ProviderConfig) -> None:
     """Persist provider config to disk."""
+    if not isinstance(config, ProviderConfig):
+        raise TypeError("config must be ProviderConfig")
     CONFIG_PATH.write_text(json.dumps(asdict(config), indent=2))
 
 

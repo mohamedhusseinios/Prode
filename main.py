@@ -236,6 +236,12 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
         if idx == 0:
             key = self.query_one("#ant-key", Input).value.strip()
             if not key:
+                self.app.notify("Please enter an API key.", severity="warning")
+                return None
+            elif len(key) < 10:
+                self.app.notify(
+                    "API key seems too short — please check it.", severity="warning"
+                )
                 return None
             return ProviderConfig(provider="anthropic", api_key=key)
 
@@ -370,7 +376,7 @@ class StatusBar(Widget):
             )
         with Container(id="hint-row"):
             yield Label(
-                "[E]xport  [C]onfigure  [Q]uit  [Tab] focus  [↑↓] scroll",
+                "[E]xport  [C]onfigure  [Y]olo  [Q]uit  [Tab] focus  [↑↓] scroll",
                 id="hints",
                 markup=False,
             )
@@ -378,13 +384,13 @@ class StatusBar(Widget):
     def set_status(self, text: str) -> None:
         try:
             self.query_one("#stage-label", Label).update(text)
-        except Exception:
+        except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
 
     def set_progress(self, done: int) -> None:
         try:
             self.query_one("#bar", ProgressBar).progress = done
-        except Exception:
+        except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
 
     def reset(self) -> None:
@@ -449,6 +455,10 @@ Screen {
     display: none;
 }
 
+#yolo-btn {
+    width: 18;
+}
+
 #main-area {
     layout: horizontal;
     height: 1fr;
@@ -479,9 +489,13 @@ class ProductResearchApp(App):
         Binding("q", "quit", "Quit", show=False),
         Binding("e", "export", "Export"),
         Binding("c", "configure", "Configure"),
+        Binding("y", "toggle_yolo", "Yolo"),
         Binding("tab", "toggle_focus", "Toggle focus"),
         Binding("ctrl+enter", "run_research", "Run", show=False, priority=True),
+        Binding("n", "advance_stage", "Next stage"),
     ]
+
+    _yolo_mode: reactive[bool] = reactive(False)
 
     def __init__(self) -> None:
         super().__init__()
@@ -489,11 +503,11 @@ class ProductResearchApp(App):
         self._results: Dict[str, str] = {}
         self._current_idea: str = ""
         self._running: bool = False
-        self._output_buffer: str = ""   # full accumulated text (for export)
-        self._stage_buffer: str = ""    # current stage only (for live display)
+        self._output_buffer: str = ""  # full accumulated text (for export)
+        self._stage_buffer: str = ""  # current stage only (for live display)
         self._pending_refresh: bool = False
         self._last_flush_time: float = 0.0
-        self._advance_event: asyncio.Event = asyncio.Event()
+        self._advance_event: asyncio.Event | None = None
         self._is_last_stage: bool = False
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -508,6 +522,7 @@ class ProductResearchApp(App):
             yield IdeaInput()
             yield Button("▶ Research", variant="primary", id="run-btn")
             yield Button("Next →", variant="success", id="next-btn")
+            yield Button("⚡ Yolo: OFF", variant="default", id="yolo-btn")
 
         with Horizontal(id="main-area"):
             yield StagesSidebar()
@@ -547,20 +562,32 @@ class ProductResearchApp(App):
 
     @on(Button.Pressed, "#run-btn")
     def _on_run_pressed(self) -> None:
+        run_btn = self.query_one("#run-btn", Button)
+        run_btn.disabled = True
         self.action_run_research()
+
+    @on(Button.Pressed, "#yolo-btn")
+    def _on_yolo_pressed(self) -> None:
+        self.action_toggle_yolo()
 
     @on(Button.Pressed, "#next-btn")
     def _on_next_pressed(self) -> None:
         btn = self.query_one("#next-btn", Button)
+        btn.disabled = True  # Guard against double-clicking
         btn.display = False
         btn.label = "Next →"
         if self._is_last_stage:
             self._is_last_stage = False
             self.action_export()
         else:
-            self._advance_event.set()
+            if self._advance_event is not None:
+                self._advance_event.set()
 
     # ── Actions ───────────────────────────────────────────────────────────────
+
+    def action_advance_stage(self) -> None:
+        if self._advance_event is not None:
+            self._advance_event.set()
 
     def action_run_research(self) -> None:
         if self._running:
@@ -591,17 +618,20 @@ class ProductResearchApp(App):
             btn = self.query_one("#next-btn", Button)
             btn.label = "Next →"
             btn.display = False
-        except Exception:
+        except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
         self.query_one(StatusBar).reset()
         self._output_buffer = f"# Product Research: {idea}\n\n"
         self._stage_buffer = f"# Product Research: {idea}\n\n"
         self._pending_refresh = False
         try:
-            self.query_one("#output-md", Static).update(RichMarkdown(self._stage_buffer))
-        except Exception:
+            self.query_one("#output-md", Static).update(
+                RichMarkdown(self._stage_buffer)
+            )
+        except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
-        self.notify(f"Starting research for: {idea[:50]}", timeout=3)
+        display_idea = idea if len(idea) <= 50 else idea[:47] + "..."
+        self.notify(f"Starting research for: {display_idea}", timeout=3)
         self._run_all_stages()
 
     def action_export(self) -> None:
@@ -626,6 +656,18 @@ class ProductResearchApp(App):
             self.query_one("#header-provider", Label).update(
                 f"{VERSION}  ·  {config.display_name}"
             )
+
+    def action_toggle_yolo(self) -> None:
+        self._yolo_mode = not self._yolo_mode
+        btn = self.query_one("#yolo-btn", Button)
+        if self._yolo_mode:
+            btn.label = "⚡ Yolo: ON"
+            btn.variant = "warning"
+            self.notify("Yolo mode ON — stages auto-advance", timeout=3)
+        else:
+            btn.label = "⚡ Yolo: OFF"
+            btn.variant = "default"
+            self.notify("Yolo mode OFF", timeout=2)
 
     def action_toggle_focus(self) -> None:
         inp = self.query_one("#idea-input", IdeaInput)
@@ -656,7 +698,7 @@ class ProductResearchApp(App):
                 self._stage_buffer = f"## {stage.name}\n\n"
                 try:
                     self.query_one("#output-md", Static).update(self._stage_buffer)
-                except Exception:
+                except Exception:  # noqa: BLE001 — widget may not exist yet
                     pass
 
                 prompt = stage.prompt_template.format(idea=self._current_idea)
@@ -667,6 +709,10 @@ class ProductResearchApp(App):
 
                 should_retry = True
                 while should_retry:
+                    if retries > 0:
+                        # Reset stage text and buffer before retrying
+                        stage_text = ""
+                        self._stage_buffer = f"## {stage.name}\n\n"
                     async for etype, content in stream_stage(self._config, prompt):
                         if etype == "text":
                             stage_text += content
@@ -687,7 +733,8 @@ class ProductResearchApp(App):
                                 success = False
                                 should_retry = False
                                 break
-                            for secs in range(RATE_LIMIT_WAIT, 0, -1):
+                            wait_time = RATE_LIMIT_WAIT * (2 ** (retries - 1))
+                            for secs in range(wait_time, 0, -1):
                                 status_bar.set_status(
                                     f"⏳  Rate limited — retry {retries}/{MAX_RETRIES} in {secs}s…"
                                 )
@@ -711,30 +758,62 @@ class ProductResearchApp(App):
 
                 self._results[stage.id] = stage_text
                 sidebar.set_status(stage.id, "done" if success else "failed")
-                status_bar.set_progress(idx + 1)
+                status_bar.set_progress(idx + 1 if success else idx)
+                if self._yolo_mode and not success:
+                    self.notify(
+                        f"Stage failed: {stage.name}", severity="error", timeout=5
+                    )
                 await self._render_markdown()
 
                 if idx < len(STAGES) - 1:
                     self._advance_event.clear()
-                    self.query_one("#next-btn", Button).display = True
-                    status_bar.set_status(f"✓  {stage.name} complete — click Next to continue")
-                    await self._advance_event.wait()
+                    if self._yolo_mode:
+                        status_bar.set_status(
+                            f"✓  {stage.name} complete — auto-advancing…"
+                        )
+                        await asyncio.sleep(0.5)
+                    else:
+                        btn = self.query_one("#next-btn", Button)
+                        btn.disabled = False
+                        btn.display = True
+                        status_bar.set_status(
+                            f"✓  {stage.name} complete — click Next to continue"
+                        )
+                        try:
+                            await asyncio.wait_for(
+                                self._advance_event.wait(), timeout=300
+                            )
+                        except asyncio.TimeoutError:
+                            status_bar.set_status(
+                                "⏳  Timed out waiting for Next — continuing…"
+                            )
                 else:
-                    # Last stage — show Save button for user to export manually
-                    self._is_last_stage = True
-                    self.call_from_thread(self._show_save_button)
-                    status_bar.set_status("✓  Research complete — click Save to export")
-                    self.notify("Research complete! Click Save to export.", timeout=5)
-                    await self._advance_event.wait()
-
+                    if self._yolo_mode:
+                        status_bar.set_status(
+                            "✓  Research complete — saving automatically…"
+                        )
+                        self.notify("Research complete! Exporting results…", timeout=4)
+                        self.action_export()
+                    else:
+                        # Last stage — show Save button for user to export manually
+                        self._is_last_stage = True
+                        self._show_save_button()
+                        status_bar.set_status(
+                            "✓  Research complete — click Save to export"
+                        )
+                        self.notify(
+                            "Research complete! Click Save to export.", timeout=5
+                        )
 
         except Exception as exc:
             self._append_output(f"\n\n> ✗ **Unexpected error:** {exc}\n\n")
-            status_bar.set_status(f"✗  Error: {exc}")
+            self._set_status(f"✗  Error: {exc}")
             self.notify(f"Unexpected error: {exc}", severity="error", timeout=15)
 
         finally:
             self._running = False
+            run_btn = self.query_one("#run-btn", Button)
+            run_btn.disabled = False
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -742,12 +821,12 @@ class ProductResearchApp(App):
         btn = self.query_one("#next-btn", Button)
         btn.label = "💾 Save"
         btn.display = True
-    
+
     def _update_output(self, content: str) -> None:
         self._output_buffer = content
         try:
             self.query_one("#output-md", Static).update(RichMarkdown(content))
-        except Exception:
+        except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
 
     def _append_output(self, chunk: str) -> None:
@@ -760,24 +839,33 @@ class ProductResearchApp(App):
     def _flush_output(self) -> None:
         self._pending_refresh = False
         try:
-            self.query_one("#output-md", Static).update(self._stage_buffer)
-            self.query_one("#output-scroll").scroll_end(animate=False)
-        except Exception:
+            self.query_one("#output-md", Static).update(
+                RichMarkdown(self._stage_buffer)
+            )
+            scroll = self.query_one("#output-scroll")
+            if scroll.is_vertical_scroll_end:
+                scroll.scroll_end(animate=False)
+        except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
 
     async def _render_markdown(self) -> None:
         """Parse markdown in a thread (non-blocking), then update the widget."""
         try:
             loop = asyncio.get_event_loop()
-            rendered = await loop.run_in_executor(None, RichMarkdown, self._stage_buffer)
+            rendered = await loop.run_in_executor(
+                None, RichMarkdown, self._stage_buffer
+            )
             self.query_one("#output-md", Static).update(rendered)
-        except Exception:
-            pass  # keep plain text if render fails
+        except Exception:  # noqa: BLE001 — widget may not exist yet
+            try:
+                self.query_one("#output-md", Static).update(self._stage_buffer)
+            except Exception:  # noqa: BLE001 — widget may not exist yet
+                pass
 
     def _set_status(self, text: str) -> None:
         try:
             self.query_one(StatusBar).set_status(text)
-        except Exception:
+        except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
 
 

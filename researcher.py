@@ -7,9 +7,12 @@ Supports two provider backends:
 """
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
+
+logger = logging.getLogger(__name__)
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -47,7 +50,9 @@ class ProviderConfig:
 
     @property
     def effective_model(self) -> str:
-        return self.model or (MODEL_ANTHROPIC if self.provider == "anthropic" else "llama3.2")
+        return self.model or (
+            MODEL_ANTHROPIC if self.provider == "anthropic" else "llama3.2"
+        )
 
     @property
     def ollama_base_url(self) -> str:
@@ -146,13 +151,14 @@ async def _fetch_search_context(prompt: str, max_results: int = 5) -> str:
     match = re.search(r"\*\*(.+?)\*\*", prompt)
     query = match.group(1) if match else prompt[:120]
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _sync_search() -> list[dict]:
         try:
             with DDGS() as ddgs:
                 return list(ddgs.text(query, max_results=max_results))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Search failed: %s", exc)
             return []
 
     results = await loop.run_in_executor(None, _sync_search)
@@ -182,16 +188,24 @@ async def _stream_ollama(
     config: ProviderConfig,
     prompt: str,
 ) -> AsyncGenerator[tuple[str, str], None]:
-    from openai import AsyncOpenAI, APIConnectionError, RateLimitError, APIStatusError
+    from openai import (
+        AsyncOpenAI,
+        APIConnectionError,
+        APITimeoutError,
+        RateLimitError,
+        APIStatusError,
+    )
 
     client = AsyncOpenAI(
         base_url=config.ollama_base_url,
-        api_key=config.api_key or "ollama",  # Ollama ignores the key but SDK requires one
+        api_key=config.api_key
+        or "ollama",  # Ollama ignores the key but SDK requires one
     )
     try:
         yield ("searching", "")
         search_context = await _fetch_search_context(prompt)
-        yield ("search_done", "")
+        if search_context:
+            yield ("search_done", "")
 
         system = OLLAMA_SYSTEM_PROMPT
         if search_context:
@@ -215,8 +229,13 @@ async def _stream_ollama(
 
     except RateLimitError:
         yield ("rate_limit", "")
+    except APITimeoutError:
+        yield ("rate_limit", "")
     except APIConnectionError as exc:
-        yield ("error", f"Cannot connect to Ollama at {config.ollama_base_url} — is it running? ({exc})")
+        yield (
+            "error",
+            f"Cannot connect to Ollama at {config.ollama_base_url} — is it running? ({exc})",
+        )
     except APIStatusError as exc:
         yield ("error", f"API error {exc.status_code}: {exc.message}")
     except Exception as exc:  # noqa: BLE001
