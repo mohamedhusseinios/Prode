@@ -1,267 +1,218 @@
-"""Streaming API logic for each research stage.
+"""Syrin-powered research pipeline for Prode.
 
-Supports two provider backends:
-  - "anthropic" — Anthropic SDK with claude-sonnet-4-6 + built-in web search
-  - "ollama"    — OpenAI-compatible API (local Ollama or any custom endpoint)
-                  Uses DuckDuckGo search to ground responses in current data.
+This module replaces the old researcher.py (stream_stage, _stream_anthropic,
+_stream_ollama, _fetch_search_context, ProviderConfig). It uses Syrin's Swarm
+REFLECTION topology to run each research topic through a producer-critic loop.
 """
 
 import asyncio
-import logging
-import re
+import os
+from typing import AsyncGenerator, TypedDict
+
+# Re-export ProviderConfig for backward compat with config.py
 from dataclasses import dataclass
-from typing import AsyncGenerator, Optional
-
-logger = logging.getLogger(__name__)
-
-# ─── Prompts ──────────────────────────────────────────────────────────────────
-
-_BASE_PROMPT = (
-    "You are a senior product strategist with 15 years of experience building and advising "
-    "B2B and B2C companies. Be specific, data-driven, and opinionated. "
-    "Use real company names, real pricing when known. Format output in clean markdown "
-    "with tables where useful. "
-    "Don't hedge — give your actual opinion."
-)
-
-# Anthropic variant asks the model to use its built-in web search tool
-ANTHROPIC_SYSTEM_PROMPT = _BASE_PROMPT + (
-    " Search the web to ground your findings in current data."
-)
-
-# Ollama / local models don't have web search — keep the prompt clean
-OLLAMA_SYSTEM_PROMPT = _BASE_PROMPT
-
-MODEL_ANTHROPIC = "claude-sonnet-4-6"
-MAX_TOKENS = 8096
-
-
-# ─── Provider config ──────────────────────────────────────────────────────────
+from typing import Optional
 
 
 @dataclass
 class ProviderConfig:
-    """Holds everything needed to connect to an AI backend."""
+    """Provider configuration — mirrors the original researcher.py interface."""
 
-    provider: str  # "anthropic" | "ollama"
-    model: str = ""
+    provider: str
     api_key: Optional[str] = None
-    base_url: Optional[str] = None  # Ollama: full base URL incl. /v1
-
-    @property
-    def effective_model(self) -> str:
-        return self.model or (
-            MODEL_ANTHROPIC if self.provider == "anthropic" else "llama3.2"
-        )
-
-    @property
-    def ollama_base_url(self) -> str:
-        url = self.base_url or "http://localhost:11434/v1"
-        # Ensure /v1 suffix
-        if not url.rstrip("/").endswith("/v1"):
-            url = url.rstrip("/") + "/v1"
-        return url
+    base_url: Optional[str] = None
+    model: str = ""
 
     @property
     def display_name(self) -> str:
-        if self.provider == "anthropic":
-            return f"Anthropic · {self.effective_model}"
-        loc = self.base_url or "localhost:11434"
-        return f"Ollama · {self.effective_model} @ {loc}"
-
-    @property
-    def has_web_search(self) -> bool:
-        return self.provider == "anthropic"
+        """Human-readable label for the header bar, e.g. 'Ollama · qwen3.5:397b'."""
+        name = self.provider.capitalize()
+        if self.model:
+            name = f"{name} · {self.model}"
+        return name
 
 
-# ─── Anthropic backend ────────────────────────────────────────────────────────
+from syrin import Model
+from syrin.swarm import Swarm, SwarmConfig, ReflectionConfig
+from syrin.enums import SwarmTopology
+
+from agents import (
+    MarketOverviewAgent,
+    CompetitorAnalysisAgent,
+    PainPointsAgent,
+    ICPAgent,
+    SizingAgent,
+    FeaturesAgent,
+    PositioningAgent,
+    VerdictAgent,
+    CriticAgent,
+    create_model,
+)
+from stages import STAGES
 
 
-async def _stream_anthropic(
-    config: ProviderConfig,
-    prompt: str,
-) -> AsyncGenerator[tuple[str, str], None]:
-    import anthropic
-    import httpx
+class StageResult(TypedDict):
+    content: str
+    rounds_completed: int
+    score: float | None
 
-    client = anthropic.AsyncAnthropic(
-        api_key=config.api_key,
-        # connect timeout: 10s  |  read timeout: 300s (web search can hold
-        # the stream open for 60-120s with no bytes while searching)
-        timeout=httpx.Timeout(timeout=300.0, connect=10.0),
+
+PipelineEvent = tuple[
+    str,  # event type
+    str | tuple[str, int] | StageResult,  # payload
+]
+
+
+AGENT_CLASSES = {
+    "market": MarketOverviewAgent,
+    "competitors": CompetitorAnalysisAgent,
+    "pain_points": PainPointsAgent,
+    "icp": ICPAgent,
+    "sizing": SizingAgent,
+    "features": FeaturesAgent,
+    "positioning": PositioningAgent,
+    "verdict": VerdictAgent,
+}
+
+
+def _build_swarm(
+    stage_id: str,
+    idea: str,
+    model: Model,
+    provider: str,
+    max_rounds: int,
+) -> Swarm:
+    """Build a single-stage REFLECTION swarm for one research topic."""
+    producer_cls = AGENT_CLASSES[stage_id]
+
+    # Inject idea into producer system prompt
+    producer_system = producer_cls.system_prompt.format(idea=idea)
+
+    producer = producer_cls(
+        model=model,
+        provider=provider,
+        system_prompt=producer_system,
     )
-    try:
-        async with client.messages.stream(
-            model=config.effective_model,
-            max_tokens=MAX_TOKENS,
-            system=ANTHROPIC_SYSTEM_PROMPT,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            searching = False
-            async for event in stream:
-                etype = getattr(event, "type", None)
+    critic = CriticAgent(
+        model=model,
+        threshold=7,
+    )
 
-                if etype == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block:
-                        if (
-                            getattr(block, "type", None) == "tool_use"
-                            and getattr(block, "name", None) == "web_search"
-                        ):
-                            searching = True
-                            yield ("searching", "")
+    # Create factory callables with pre-bound args for ReflectionConfig.
+    # These must be zero-arg callables that return agent instances, and must have
+    # a __name__ attribute for the swarm's agent-status tracking.
+    producer_factory = _agent_factory(
+        producer_cls,
+        __name__=producer_cls.__name__,
+        model=model,
+        provider=provider,
+        system_prompt=producer_system,
+    )
+    critic_factory = _agent_factory(
+        CriticAgent, __name__=CriticAgent.__name__, model=model, threshold=7
+    )
 
-                elif etype == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta and getattr(delta, "type", None) == "text_delta":
-                        text = getattr(delta, "text", "")
-                        if text:
-                            yield ("text", text)
-
-                elif etype == "content_block_stop":
-                    if searching:
-                        searching = False
-                        yield ("search_done", "")
-
-    except anthropic.RateLimitError:
-        yield ("rate_limit", "")
-    except anthropic.APITimeoutError:
-        yield ("rate_limit", "")  # treat timeout as retryable, same as rate-limit
-    except anthropic.APIConnectionError as exc:
-        yield ("error", f"Connection error: {exc}")
-    except anthropic.APIStatusError as exc:
-        yield ("error", f"API error {exc.status_code}: {exc.message}")
-    except Exception as exc:  # noqa: BLE001
-        yield ("error", str(exc))
+    return Swarm(
+        agents=[producer, critic],
+        goal=f"Research: {stage_id} for idea: {idea}",
+        config=SwarmConfig(
+            topology=SwarmTopology.REFLECTION,
+            reflection=ReflectionConfig(
+                producer=producer_factory,
+                critic=critic_factory,
+                max_rounds=max_rounds,
+                stop_when=lambda ro: ro.score >= 0.7,
+            ),
+        ),
+    )
 
 
-# ─── Web search helper (used by Ollama path) ──────────────────────────────────
+def _agent_factory(cls, __name__: str, **kwargs):
+    """Create a zero-arg callable that instantiates ``cls(**kwargs)``.
 
-
-async def _fetch_search_context(prompt: str, max_results: int = 5) -> str:
-    """Search DuckDuckGo for the idea in the prompt and return formatted results.
-
-    Extracts the bolded idea text (e.g. **My Idea**) from the prompt template,
-    runs a synchronous DDG search in a thread executor so it doesn't block the
-    async event loop, and returns a markdown-formatted context block.
+    The returned callable carries a ``__name__`` attribute so that
+    ``syrin.swarm`` can use it for agent-status tracking.
     """
-    from ddgs import DDGS
 
-    match = re.search(r"\*\*(.+?)\*\*", prompt)
-    query = match.group(1) if match else prompt[:120]
+    def factory():
+        return cls(**kwargs)
 
-    loop = asyncio.get_running_loop()
+    factory.__name__ = __name__
+    return factory
 
-    def _sync_search() -> list[dict]:
+
+async def run_research_pipeline(
+    idea: str,
+    provider: str,
+    model: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> AsyncGenerator[PipelineEvent, None]:
+    """Run the full 8-stage research pipeline with reflection.
+
+    Args:
+        idea: The product idea to research.
+        provider: "anthropic", "ollama", or "custom".
+        model: Model name string.
+        api_key: Optional API key (falls back to env vars).
+        base_url: Optional base URL for Ollama/custom endpoints.
+
+    Yields:
+        PipelineEvent tuples:
+        - ("stage_start", stage_id)
+        - ("reflection_round", (stage_id, round_num))   # 0-based round index
+        - ("stage_complete", StageResult)  # StageResult = {content, rounds_completed, score}
+        - ("error", message)
+        - ("searching", "")
+        - ("search_done", "")
+    """
+    syrin_model = create_model(
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+    )
+
+    for stage in STAGES:
+        yield ("stage_start", stage.id)
+
         try:
-            with DDGS() as ddgs:
-                return list(ddgs.text(query, max_results=max_results))
-        except Exception as exc:
-            logger.warning("Search failed: %s", exc)
-            return []
+            swarm = _build_swarm(
+                stage_id=stage.id,
+                idea=idea,
+                model=syrin_model,
+                provider=provider,
+                max_rounds=stage.max_reflection_rounds,
+            )
 
-    results = await loop.run_in_executor(None, _sync_search)
-    if not results:
-        return ""
+            # Run reflection rounds and yield round progress
+            handle = swarm.play()
+            # wait() returns SwarmResult when the swarm completes
+            result = await handle.wait()
 
-    lines = ["## Recent Web Search Results\n"]
-    for r in results:
-        title = r.get("title", "").strip()
-        body = r.get("body", "").strip()
-        href = r.get("href", "").strip()
-        if title:
-            lines.append(f"**{title}**")
-        if body:
-            lines.append(body)
-        if href:
-            lines.append(f"Source: {href}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-# ─── Ollama / OpenAI-compatible backend ───────────────────────────────────────
-
-
-async def _stream_ollama(
-    config: ProviderConfig,
-    prompt: str,
-) -> AsyncGenerator[tuple[str, str], None]:
-    from openai import (
-        AsyncOpenAI,
-        APIConnectionError,
-        APITimeoutError,
-        RateLimitError,
-        APIStatusError,
-    )
-
-    client = AsyncOpenAI(
-        base_url=config.ollama_base_url,
-        api_key=config.api_key
-        or "ollama",  # Ollama ignores the key but SDK requires one
-    )
-    try:
-        yield ("searching", "")
-        search_context = await _fetch_search_context(prompt)
-        if search_context:
-            yield ("search_done", "")
-
-        system = OLLAMA_SYSTEM_PROMPT
-        if search_context:
-            system = system + "\n\n" + search_context
-
-        response = await client.chat.completions.create(
-            model=config.effective_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            stream=True,
-            max_tokens=MAX_TOKENS,
-        )
-        async for chunk in response:
-            if not chunk.choices:
+            if result.reflection_result is None:
+                yield ("error", f"{stage.name}: no reflection result returned")
                 continue
-            delta = chunk.choices[0].delta
-            if delta and delta.content:
-                yield ("text", delta.content)
 
-    except RateLimitError:
-        yield ("rate_limit", "")
-    except APITimeoutError:
-        yield ("rate_limit", "")
-    except APIConnectionError as exc:
-        yield (
-            "error",
-            f"Cannot connect to Ollama at {config.ollama_base_url} — is it running? ({exc})",
-        )
-    except APIStatusError as exc:
-        yield ("error", f"API error {exc.status_code}: {exc.message}")
-    except Exception as exc:  # noqa: BLE001
-        yield ("error", str(exc))
+            rr = result.reflection_result
 
+            # Yield each completed round for UI feedback
+            for ro in rr.round_outputs:
+                yield ("reflection_round", (stage.id, ro.round_index))
 
-# ─── Public interface ─────────────────────────────────────────────────────────
+            final_content = rr.content
+            final_score = (
+                rr.round_outputs[rr.final_round].score if rr.round_outputs else None
+            )
 
+            yield (
+                "stage_complete",
+                {
+                    "content": final_content,
+                    "rounds_completed": rr.rounds_completed,
+                    "score": final_score,
+                },
+            )
 
-async def stream_stage(
-    config: ProviderConfig,
-    prompt: str,
-) -> AsyncGenerator[tuple[str, str], None]:
-    """
-    Stream a single research stage for any provider.
-
-    Yields (event_type, content) tuples:
-      ('text',        token)    — text token to append to output
-      ('searching',   '')       — Anthropic web search started
-      ('search_done', '')       — web search block finished
-      ('rate_limit',  '')       — rate-limit hit; caller should retry
-      ('error',       message)  — unrecoverable error
-    """
-    if config.provider == "anthropic":
-        async for event in _stream_anthropic(config, prompt):
-            yield event
-    else:
-        async for event in _stream_ollama(config, prompt):
-            yield event
+        except Exception as exc:
+            yield ("error", f"{stage.name} failed: {exc}")

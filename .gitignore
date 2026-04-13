@@ -2,3 +2,8 @@
 __pycache__/
 .env
 *.pyc
+
+# Syrin files
+.syrin/events
+.syrin/.dev-history
+.syrin/data

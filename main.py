@@ -6,7 +6,6 @@ Terminal TUI powered by Textual + Anthropic/Ollama + Web Search
 
 import asyncio
 import os
-import time
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -34,7 +33,7 @@ from textual.widget import Widget
 
 from config import load_config, save_config
 from exporter import export_results
-from researcher import ProviderConfig, stream_stage
+from researcher import ProviderConfig, run_research_pipeline
 from stages import STAGES
 
 load_dotenv()
@@ -269,6 +268,15 @@ class ProviderSetupModal(ModalScreen[ProviderConfig]):
             api_key=key or None,
         )
 
+    def _get_model_name(self) -> str:
+        """Return the model name from the modal's current inputs."""
+        idx = self._provider_idx
+        if idx == 0:
+            return "claude-sonnet"
+        if idx == 1:
+            return self.query_one("#ol-local-model", Input).value.strip() or "llama3.2"
+        return self.query_one("#ol-cloud-model", Input).value.strip() or "llama3.2"
+
 
 # ─── Directory picker modal ───────────────────────────────────────────────────
 
@@ -283,33 +291,37 @@ class DirectoryPickerModal(ModalScreen[str | None]):
 
     #dir-picker-container {
         width: 72;
-        height: 20;
+        height: 26;
         background: $surface;
         border: double $primary;
-        padding: 2 4;
+        padding: 1 2;
     }
 
     #dir-picker-title {
         text-align: center;
         text-style: bold;
+        height: 1;
         margin-bottom: 1;
         color: $accent;
     }
 
     #dir-tree {
-        height: 12;
+        height: 13;
+        max-height: 13;
+        overflow-y: auto;
         border: solid $primary-darken-2;
-        margin-bottom: 1;
     }
 
     #selected-path {
-        margin-bottom: 1;
+        height: 1;
         color: $text-muted;
     }
 
     #dir-btn-row {
-        height: auto;
+        dock: bottom;
+        height: 3;
         align: right middle;
+        padding-top: 1;
     }
 
     #dir-btn-row > Button {
@@ -357,6 +369,76 @@ class DirectoryPickerModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class ExportSuccessModal(ModalScreen[bool]):
+    """Modal shown after successful export. Returns True for New Session, False for Close."""
+
+    DEFAULT_CSS = """
+    ExportSuccessModal {
+        align: center middle;
+    }
+
+    #export-success-container {
+        width: 60;
+        height: auto;
+        background: $surface;
+        border: double $primary;
+        padding: 2 4;
+    }
+
+    #export-success-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+        color: $accent;
+    }
+
+    #export-success-path {
+        color: $text-muted;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    #export-btn-row {
+        align: center middle;
+        height: 3;
+    }
+
+    #export-btn-row > Button {
+        margin-left: 1;
+        margin-right: 1;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "close_modal", "Close"),
+    ]
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self._path = path
+
+    def compose(self) -> ComposeResult:
+        with Container(id="export-success-container"):
+            yield Label("✓  Report exported successfully!", id="export-success-title")
+            yield Label(f"📄  {self._path}", id="export-success-path")
+            with Horizontal(id="export-btn-row"):
+                yield Button("Close", variant="default", id="export-close-btn")
+                yield Button(
+                    "🔄  New Session", variant="primary", id="export-new-session-btn"
+                )
+
+    @on(Button.Pressed, "#export-close-btn")
+    def _on_close(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#export-new-session-btn")
+    def _on_new_session(self) -> None:
+        self.dismiss(True)
+
+    def action_close_modal(self) -> None:
+        self.dismiss(False)
+
+
 # ─── Stages sidebar ───────────────────────────────────────────────────────────
 
 
@@ -390,6 +472,13 @@ class StagesSidebar(Widget):
 
     def set_status(self, stage_id: str, status: str) -> None:
         self._statuses[stage_id] = status
+        self.refresh()
+
+    def set_score(self, stage_id: str, score: float) -> None:
+        """Store quality score for a completed stage (0.0–1.0)."""
+        if not hasattr(self, "_scores"):
+            self._scores: dict[str, float] = {}
+        self._scores[stage_id] = score
         self.refresh()
 
     def reset(self) -> None:
@@ -720,18 +809,9 @@ class ProductResearchApp(App):
             )
             self._set_status("⚠  No provider configured.")
             return
+        self._reset_session()
         self._current_idea = idea
-        self._results = {}
         self._running = True
-        self.query_one(StagesSidebar).reset()
-        self._is_last_stage = False
-        try:
-            btn = self.query_one("#next-btn", Button)
-            btn.label = "Next →"
-            btn.display = False
-        except Exception:  # noqa: BLE001 — widget may not exist yet
-            pass
-        self.query_one(StatusBar).reset()
         self._output_buffer = f"# Product Research: {idea}\n\n"
         self._stage_buffer = f"# Product Research: {idea}\n\n"
         self._pending_refresh = False
@@ -744,6 +824,34 @@ class ProductResearchApp(App):
         display_idea = idea if len(idea) <= 50 else idea[:47] + "..."
         self.notify(f"Starting research for: {display_idea}", timeout=3)
         self._run_all_stages()
+
+    # ------------------------------------------------------------------
+    # Session reset — used by action_run_research and ExportSuccessModal
+    # ------------------------------------------------------------------
+    def _reset_session(self) -> None:
+        """Clear all session state without starting a new pipeline."""
+        self._results = {}
+        self._current_idea = ""
+        self._running = False
+        self._is_last_stage = False
+        self.query_one(StagesSidebar).reset()
+        self.query_one(StatusBar).reset()
+        try:
+            btn = self.query_one("#next-btn", Button)
+            btn.label = "Next →"
+            btn.disabled = True
+            btn.display = False
+        except Exception:  # noqa: BLE001 — widget may not exist yet
+            pass
+        self._output_buffer = ""
+        self._stage_buffer = ""
+        try:
+            self.query_one("#output-md", Static).update(RichMarkdown(""))
+        except Exception:  # noqa: BLE001 — widget may not exist yet
+            pass
+        self.query_one("#idea-input", IdeaInput).text = ""
+        self.query_one("#idea-input", IdeaInput).focus()
+        self.query_one("#run-btn", Button).disabled = False
 
     async def _do_export(self) -> None:
         """Plain async method to perform export with directory picker."""
@@ -759,6 +867,9 @@ class ProductResearchApp(App):
                 self._current_idea, self._results, output_dir=chosen_dir
             )
             self._set_status(f"✓  Saved to {path}")
+            new_session = await self.push_screen_wait(ExportSuccessModal(path=path))
+            if new_session:
+                self._reset_session()
         except Exception as exc:
             self._set_status(f"✗  Export failed: {exc}")
 
@@ -817,126 +928,83 @@ class ProductResearchApp(App):
 
     @work(name="research")
     async def _run_all_stages(self) -> None:
-        """Sequentially stream all 8 research stages."""
+        """Run the full 8-stage research pipeline via Syrin REFLECTION."""
         try:
             sidebar = self.query_one(StagesSidebar)
             status_bar = self.query_one(StatusBar)
             self._advance_event = asyncio.Event()
-            for idx, stage in enumerate(STAGES):
-                sidebar.set_status(stage.id, "running")
-                status_bar.set_status(f"⟳  {stage.name}…")
-                status_bar.set_progress(idx)
 
-                self._output_buffer += f"\n\n## {stage.name}\n\n"
-                self._stage_buffer = f"## {stage.name}\n\n"
-                try:
-                    self.query_one("#output-md", Static).update(self._stage_buffer)
-                except Exception:  # noqa: BLE001 — widget may not exist yet
-                    pass
+            model_name = self._config.model or (
+                "claude-sonnet" if self._config.provider == "anthropic" else "llama3.2"
+            )
 
-                prompt = stage.prompt_template.format(idea=self._current_idea)
-                stage_text = ""
-                success = True
-                retries = 0
-                MAX_RETRIES = 3
+            async for event_type, payload in run_research_pipeline(
+                idea=self._current_idea,
+                provider=self._config.provider,
+                model=model_name,
+                api_key=self._config.api_key,
+                base_url=self._config.base_url or None,
+            ):
+                if event_type == "stage_start":
+                    stage_id = payload  # type: ignore[assignment]
+                    stage = next(s for s in STAGES if s.id == stage_id)
+                    sidebar.set_status(stage.id, "running")
+                    status_bar.set_status(f"⟳  {stage.name}…")
+                    self._output_buffer += f"\n\n## {stage.name}\n\n"
+                    self._stage_buffer = f"## {stage.name}\n\n"
 
-                should_retry = True
-                while should_retry:
-                    if retries > 0:
-                        # Reset stage text and buffer before retrying
-                        stage_text = ""
-                        self._stage_buffer = f"## {stage.name}\n\n"
-                    async for etype, content in stream_stage(self._config, prompt):
-                        if etype == "text":
-                            stage_text += content
-                            self._append_output(content)
+                elif event_type == "reflection_round":
+                    stage_id, round_num = payload  # type: ignore[assignment]
+                    stage = next(s for s in STAGES if s.id == stage_id)
+                    self._stage_buffer += f"\n\n### Round {round_num + 1}\n\n"
+                    status_bar.set_status(f"⟳  {stage.name} — Round {round_num + 1}…")
 
-                        elif etype == "searching":
-                            status_bar.set_status("🌐  Searching the web…")
-
-                        elif etype == "search_done":
-                            status_bar.set_status(f"⟳  {stage.name}…")
-
-                        elif etype == "rate_limit":
-                            retries += 1
-                            if retries > MAX_RETRIES:
-                                self._append_output(
-                                    f"\n\n> ⚠ **{stage.name} failed after {MAX_RETRIES} retries.**\n\n"
-                                )
-                                success = False
-                                should_retry = False
-                                break
-                            wait_time = RATE_LIMIT_WAIT * (2 ** (retries - 1))
-                            for secs in range(wait_time, 0, -1):
-                                status_bar.set_status(
-                                    f"⏳  Rate limited — retry {retries}/{MAX_RETRIES} in {secs}s…"
-                                )
-                                await asyncio.sleep(1)
-                            break  # will retry
-
-                        elif etype == "error":
-                            self._append_output(
-                                f"\n\n> ⚠ **Error during {stage.name}:** {content}\n\n"
-                            )
-                            self.notify(
-                                f"Error — {stage.name}: {content[:120]}",
-                                severity="error",
-                                timeout=10,
-                            )
-                            success = False
-                            should_retry = False
-                            break
-                    else:
-                        should_retry = False  # stream completed normally
-
-                self._results[stage.id] = stage_text
-                sidebar.set_status(stage.id, "done" if success else "failed")
-                status_bar.set_progress(idx + 1 if success else idx)
-                if self._yolo_mode and not success:
-                    self.notify(
-                        f"Stage failed: {stage.name}", severity="error", timeout=5
+                elif event_type == "stage_complete":
+                    result = payload  # type: ignore[assignment]
+                    stage_text = result["content"]
+                    rounds = result["rounds_completed"]
+                    score = result.get("score")
+                    stage_id = next(
+                        (s.id for s in STAGES if s.id == stage_id),
+                        next(s.id for s in STAGES if s.name in self._stage_buffer),
                     )
-                await self._render_markdown()
+                    stage = next(s for s in STAGES if s.id == stage_id)
 
-                if idx < len(STAGES) - 1:
-                    self._advance_event.clear()
-                    if self._yolo_mode:
-                        status_bar.set_status(
-                            f"✓  {stage.name} complete — auto-advancing…"
-                        )
-                        await asyncio.sleep(0.5)
-                    else:
-                        btn = self.query_one("#next-btn", Button)
-                        btn.disabled = False
-                        btn.display = True
-                        status_bar.set_status(
-                            f"✓  {stage.name} complete — click Next to continue"
-                        )
-                        try:
-                            await asyncio.wait_for(
-                                self._advance_event.wait(), timeout=300
-                            )
-                        except asyncio.TimeoutError:
-                            status_bar.set_status(
-                                "⏳  Timed out waiting for Next — continuing…"
-                            )
-                else:
-                    if self._yolo_mode:
-                        status_bar.set_status(
-                            "✓  Research complete — saving automatically…"
-                        )
-                        self.notify("Research complete! Exporting results…", timeout=4)
-                        await self._do_export()
-                    else:
-                        # Last stage — show Save button for user to export manually
-                        self._is_last_stage = True
-                        self._show_save_button()
-                        status_bar.set_status(
-                            "✓  Research complete — click Save to export"
-                        )
-                        self.notify(
-                            "Research complete! Click Save to export.", timeout=5
-                        )
+                    self._stage_buffer += stage_text
+                    self._append_output(stage_text)
+                    self._results[stage.id] = stage_text
+
+                    score_str = f"{score:.0%}" if score is not None else "N/A"
+                    sidebar.set_status(stage.id, "done")
+                    sidebar.set_score(stage.id, score)
+
+                    idx = STAGES.index(stage)
+                    status_bar.set_progress(idx + 1)
+                    await self._render_markdown()
+
+                elif event_type == "error":
+                    error_msg = payload  # type: ignore[assignment]
+                    self._append_output(f"\n\n> ⚠ **{error_msg}**\n\n")
+                    self.notify(
+                        f"Error: {error_msg[:120]}", severity="error", timeout=10
+                    )
+                    sidebar.set_status(stage.id, "failed")
+
+                elif event_type == "searching":
+                    status_bar.set_status("🌐  Searching the web…")
+
+                elif event_type == "search_done":
+                    status_bar.set_status(f"⟳  {stage.name}…")
+
+            # Pipeline complete — trigger export
+            if self._yolo_mode:
+                status_bar.set_status("✓  Research complete — saving automatically…")
+                self.notify("Research complete! Exporting results…", timeout=4)
+                await self._do_export()
+            else:
+                self._is_last_stage = True
+                status_bar.set_status("✓  Research complete — click Save to export")
+                self.notify("Research complete! Click Save to export.", timeout=5)
 
         except asyncio.CancelledError:
             self._append_output("\n\n> ✗ **Cancelled.**\n\n")
@@ -952,6 +1020,8 @@ class ProductResearchApp(App):
             self._running = False
             run_btn = self.query_one("#run-btn", Button)
             run_btn.disabled = False
+            if self._results:
+                self._show_save_button()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
