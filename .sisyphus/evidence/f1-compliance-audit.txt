@@ -1,0 +1,87 @@
+PLAN COMPLIANCE AUDIT
+=====================
+
+Plan: export-close-features.md
+Implementation File: main.py
+Audit Date: Sun Apr 12 2026
+
+MUST HAVE (6/6):
+================
+
+1. DirectoryPickerModal with DirectoryTree
+   Status: PASS
+   Location: main.py:276 (class definition)
+   Evidence: class DirectoryPickerModal(ModalScreen[str | None]): defined with DirectoryTree widget at line 327
+
+2. Visible ✕ close button in header
+   Status: PASS
+   Location: main.py:614
+   Evidence: yield Button("✕", id="close-btn", variant="default") in compose()
+   CSS styling: lines 506-520 with dock: right
+
+3. Clean worker cancellation before quit
+   Status: PASS
+   Location: main.py:792-800 (_cancel_and_quit method)
+   Evidence: Iterates workers, cancels "research" worker if running, sets _quitting flag
+   Additional: asyncio.CancelledError handler at line 930-934 in _run_all_stages
+
+4. Picker used in ALL export paths
+   Status: PASS
+   Location: main.py:737-757 (_do_export and action_export)
+   Evidence:
+     - E key: action_export (line 754) → _do_export (line 743) → DirectoryPickerModal
+     - Save button: _on_next_pressed (line 681) → action_export → _do_export → picker
+     - Yolo export: _run_all_stages (line 918) → await self._do_export() → picker
+
+5. Cancel button in picker modal
+   Status: PASS
+   Location: main.py:330, 344-346
+   Evidence: Button("Cancel", variant="default", id="cancel-btn") with _on_cancel handler
+
+6. Selected path displayed in modal
+   Status: PASS
+   Location: main.py:328, 334-338
+   Evidence: Static widget showing "Selected: {path}", updated on DirectoryTree.DirectorySelected event
+
+MUST NOT HAVE (6/6):
+====================
+
+1. NO changes to exporter.py
+   Status: PASS
+   Evidence: git diff HEAD exporter.py shows no changes
+
+2. NO changes to stages.py
+   Status: PASS
+   Evidence: git diff HEAD stages.py shows no changes
+
+3. NO changes to researcher.py
+   Status: PASS
+   Evidence: git diff HEAD researcher.py shows no changes
+
+4. NO manual path input
+   Status: PASS
+   Evidence: DirectoryPickerModal contains only DirectoryTree (no Input widget for typing paths)
+
+5. NO mkdir feature
+   Status: PASS
+   Evidence: grep for "mkdir|makedirs" returned no matches in codebase
+
+6. NO confirmation dialog
+   Status: PASS
+   Evidence: grep for "confirmation|confirm.*quit|confirm.*exit" returned no matches
+
+FILES MODIFIED:
+===============
+- main.py (only file with changes)
+
+SYNTAX CHECK:
+=============
+- python3 -m py_compile main.py: PASS ("Syntax OK")
+
+VERDICT: APPROVE
+================
+
+All 6 Must Have requirements are implemented correctly.
+All 6 Must NOT Have restrictions are respected.
+Only main.py was modified as specified in the plan.
+Implementation follows the exact specifications from the plan file.

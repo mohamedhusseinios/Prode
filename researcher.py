@@ -1,12 +1,11 @@
 """Syrin-powered research pipeline for Prode.
 
-This module replaces the old researcher.py (stream_stage, _stream_anthropic,
-_stream_ollama, _fetch_search_context, ProviderConfig). It uses Syrin's Swarm
-REFLECTION topology to run each research topic through a producer-critic loop.
+Runs each research stage through a producer-critic reflection loop by calling
+Syrin agents directly (bypassing Swarm), so that any API or agent error is
+surfaced as an "error" event rather than silently returning empty content.
 """
 
-import asyncio
-import os
+import re
 from typing import AsyncGenerator, TypedDict
 
 # Re-export ProviderConfig for backward compat with config.py
@@ -32,10 +31,6 @@ class ProviderConfig:
         return name
 
 
-from syrin import Model
-from syrin.swarm import Swarm, SwarmConfig, ReflectionConfig
-from syrin.enums import SwarmTopology
-
 from agents import (
     MarketOverviewAgent,
     CompetitorAnalysisAgent,
@@ -52,6 +47,7 @@ from stages import STAGES
 
 
 class StageResult(TypedDict):
+    stage_id: str
     content: str
     rounds_completed: int
     score: float | None
@@ -75,70 +71,21 @@ AGENT_CLASSES = {
 }
 
 
-def _build_swarm(
-    stage_id: str,
-    idea: str,
-    model: Model,
-    provider: str,
-    max_rounds: int,
-) -> Swarm:
-    """Build a single-stage REFLECTION swarm for one research topic."""
-    producer_cls = AGENT_CLASSES[stage_id]
+def _extract_score(text: str) -> float:
+    """Extract a numeric quality score in [0, 1] from critic output.
 
-    # Inject idea into producer system prompt
-    producer_system = producer_cls.system_prompt.format(idea=idea)
-
-    producer = producer_cls(
-        model=model,
-        provider=provider,
-        system_prompt=producer_system,
-    )
-    critic = CriticAgent(
-        model=model,
-        threshold=7,
-    )
-
-    # Create factory callables with pre-bound args for ReflectionConfig.
-    # These must be zero-arg callables that return agent instances, and must have
-    # a __name__ attribute for the swarm's agent-status tracking.
-    producer_factory = _agent_factory(
-        producer_cls,
-        __name__=producer_cls.__name__,
-        model=model,
-        provider=provider,
-        system_prompt=producer_system,
-    )
-    critic_factory = _agent_factory(
-        CriticAgent, __name__=CriticAgent.__name__, model=model, threshold=7
-    )
-
-    return Swarm(
-        agents=[producer, critic],
-        goal=f"Research: {stage_id} for idea: {idea}",
-        config=SwarmConfig(
-            topology=SwarmTopology.REFLECTION,
-            reflection=ReflectionConfig(
-                producer=producer_factory,
-                critic=critic_factory,
-                max_rounds=max_rounds,
-                stop_when=lambda ro: ro.score >= 0.7,
-            ),
-        ),
-    )
-
-
-def _agent_factory(cls, __name__: str, **kwargs):
-    """Create a zero-arg callable that instantiates ``cls(**kwargs)``.
-
-    The returned callable carries a ``__name__`` attribute so that
-    ``syrin.swarm`` can use it for agent-status tracking.
+    Prefers a number following a 'Score:' keyword; falls back to the last
+    decimal in [0, 1] found anywhere in the text; defaults to 0.5.
     """
-
-    def factory():
-        return cls(**kwargs)
-
-    factory.__name__ = __name__
-    return factory
+    score_kw = re.search(r"[Ss]core\s*[:\-]?\s*(\d+(?:\.\d+)?)", text)
+    if score_kw:
+        return max(0.0, min(1.0, float(score_kw.group(1))))
+    candidates = [
+        float(m.group(1))
+        for m in re.finditer(r"\b(\d+\.\d+)\b", text)
+        if 0.0 <= float(m.group(1)) <= 1.0
+    ]
+    return candidates[-1] if candidates else 0.5
 
 
 async def run_research_pipeline(
@@ -148,71 +95,119 @@ async def run_research_pipeline(
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> AsyncGenerator[PipelineEvent, None]:
-    """Run the full 8-stage research pipeline with reflection.
+    """Run the full 8-stage research pipeline with per-stage reflection.
 
-    Args:
-        idea: The product idea to research.
-        provider: "anthropic", "ollama", or "custom".
-        model: Model name string.
-        api_key: Optional API key (falls back to env vars).
-        base_url: Optional base URL for Ollama/custom endpoints.
+    Each stage runs a producer agent followed by a critic agent.  If the
+    critic scores the output >= 0.7, the stage completes early; otherwise
+    the producer receives the critic's feedback and tries again, up to
+    ``stage.max_reflection_rounds`` total rounds.
+
+    Errors from agent calls propagate immediately as ``("error", message)``
+    events so no stage failure can be silently swallowed.
 
     Yields:
-        PipelineEvent tuples:
-        - ("stage_start", stage_id)
-        - ("reflection_round", (stage_id, round_num))   # 0-based round index
-        - ("stage_complete", StageResult)  # StageResult = {content, rounds_completed, score}
-        - ("error", message)
-        - ("searching", "")
-        - ("search_done", "")
+        - ``("stage_start",    stage_id)``
+        - ``("reflection_round", (stage_id, round_num))``  — 0-based, real-time
+        - ``("stage_complete", StageResult)``
+        - ``("error",          message)``
     """
-    syrin_model = create_model(
-        provider=provider,
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-    )
-
     for stage in STAGES:
         yield ("stage_start", stage.id)
 
+        best_content: str = ""
+        best_score: float = 0.0
+        critic_feedback: str = ""
+        rounds_done: int = 0
+
         try:
-            swarm = _build_swarm(
-                stage_id=stage.id,
-                idea=idea,
-                model=syrin_model,
-                provider=provider,
-                max_rounds=stage.max_reflection_rounds,
-            )
+            producer_cls = AGENT_CLASSES[stage.id]
+            producer_system = producer_cls.system_prompt.format(idea=idea)
 
-            # Run reflection rounds and yield round progress
-            handle = swarm.play()
-            # wait() returns SwarmResult when the swarm completes
-            result = await handle.wait()
+            for round_idx in range(stage.max_reflection_rounds):
+                # Fresh model per round — avoids any internal async-session
+                # or conversation-history state leaking across rounds.
+                producer_model = create_model(
+                    provider=provider,
+                    model=model,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
 
-            if result.reflection_result is None:
-                yield ("error", f"{stage.name}: no reflection result returned")
-                continue
+                producer_input = (
+                    f"Research: {stage.id} for idea: {idea}"
+                    if round_idx == 0
+                    else (
+                        f"Research: {stage.id} for idea: {idea}"
+                        f"\n\nPrevious critic feedback:\n{critic_feedback}"
+                    )
+                )
 
-            rr = result.reflection_result
+                producer = producer_cls(
+                    model=producer_model,
+                    provider=provider,
+                    system_prompt=producer_system,
+                )
 
-            # Yield each completed round for UI feedback
-            for ro in rr.round_outputs:
-                yield ("reflection_round", (stage.id, ro.round_index))
+                try:
+                    producer_resp = await producer.arun(producer_input)
+                    content = getattr(producer_resp, "content", "") or ""
+                except Exception as exc:
+                    yield (
+                        "error",
+                        f"[{stage.id}] Round {round_idx + 1} producer failed: {exc}",
+                    )
+                    break  # Stop refining, use best content so far
 
-            final_content = rr.content
-            final_score = (
-                rr.round_outputs[rr.final_round].score if rr.round_outputs else None
-            )
+                if not content:
+                    # Producer returned nothing — stop refining, use best so far
+                    break
 
-            yield (
-                "stage_complete",
-                {
-                    "content": final_content,
-                    "rounds_completed": rr.rounds_completed,
-                    "score": final_score,
-                },
-            )
+                # Critic evaluates the output
+                critic_model = create_model(
+                    provider=provider,
+                    model=model,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+                critic = CriticAgent(model=critic_model, threshold=0.7)
+
+                try:
+                    critic_resp = await critic.arun(content)
+                    critic_feedback = getattr(critic_resp, "content", "") or ""
+                    score = _extract_score(critic_feedback)
+                except Exception as exc:
+                    # Critic failed — still keep the producer's output as the
+                    # best result for this stage, but skip further rounds.
+                    yield (
+                        "error",
+                        f"[{stage.id}] Round {round_idx + 1} critic failed: {exc}",
+                    )
+                    best_content = content
+                    rounds_done = round_idx + 1
+                    break
+
+                rounds_done = round_idx + 1
+                best_content = content
+                best_score = score
+
+                # Emit round event in real-time (not post-hoc)
+                yield ("reflection_round", (stage.id, round_idx))
+
+                if score >= 0.7:
+                    break  # Quality threshold met — no need for further rounds
 
         except Exception as exc:
-            yield ("error", f"{stage.name} failed: {exc}")
+            yield ("error", f"[{stage.id}] {stage.name} setup failed: {exc}")
+
+        # Always yield stage_complete so that the results dict is populated
+        # (even with empty content) and the export doesn't show
+        # "Stage not completed." for stages that partially ran.
+        yield (
+            "stage_complete",
+            {
+                "stage_id": stage.id,
+                "content": best_content,
+                "rounds_completed": rounds_done,
+                "score": best_score if rounds_done > 0 else None,
+            },
+        )

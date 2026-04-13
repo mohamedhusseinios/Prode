@@ -1,59 +1,22 @@
 {
-  "active_plan": "/Users/mohamedabdulrahman/Prode/.sisyphus/plans/bugfix-all-26.md",
-  "started_at": "2026-04-11T13:44:24.824Z",
+  "active_plan": "/Users/mohamedabdulrahman/Prode/.sisyphus/plans/syrin-integration.md",
+  "started_at": "2026-04-12T17:48:37.933Z",
   "session_ids": [
-    "ses_28388946cffevHH5CQNduBBwWr"
+    "ses_27d8dc38effeHqnb34L4T5wQpk"
   ],
   "session_origins": {
-    "ses_28388946cffevHH5CQNduBBwWr": "direct"
+    "ses_27d8dc38effeHqnb34L4T5wQpk": "direct"
   },
-  "plan_name": "bugfix-all-26",
+  "plan_name": "syrin-integration",
   "agent": "atlas",
   "task_sessions": {
-    "todo:1": {
-      "task_key": "todo:1",
-      "task_label": "1",
-      "task_title": "Create .gitignore (Bug #12)",
-      "session_id": "ses_2833549bfffe6y7zKeGooa3uv3",
-      "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-04-11T13:46:21.206Z"
-    },
-    "todo:4": {
-      "task_key": "todo:4",
-      "task_label": "4",
-      "task_title": "Fix researcher.py — Bugs #3, #5, #7, #11 (top-to-bottom)",
-      "session_id": "ses_283308d45ffeCJmu5OCUWmbwuZ",
-      "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-04-11T13:51:39.654Z"
-    },
-    "todo:5": {
-      "task_key": "todo:5",
-      "task_label": "5",
-      "task_title": "Fix config.py — Bugs #9, #22",
-      "session_id": "ses_2832f2882ffeITPycozr2cqq0U",
-      "agent": "Sisyphus-Junior",
-      "category": "unspecified-high",
-      "updated_at": "2026-04-11T13:56:14.953Z"
-    },
-    "todo:6": {
-      "task_key": "todo:6",
-      "task_label": "6",
-      "task_title": "Fix main.py bugs in init/modal region — Bugs #19, #8, #22 (lines 225-503)",
-      "session_id": "ses_2832b19a3ffe4zh0D3ooCIyj4v",
-      "agent": "Sisyphus-Junior",
-      "category": "deep",
-      "updated_at": "2026-04-11T14:09:50.894Z"
-    },
-    "todo:9": {
-      "task_key": "todo:9",
-      "task_label": "9",
-      "task_title": "Delete dead code — Bug #25 export_all_stages()",
-      "session_id": "ses_2831cc51bffe4WfAjn26cDyAOe",
-      "agent": "Sisyphus-Junior",
-      "category": "unspecified-high",
-      "updated_at": "2026-04-11T14:13:53.415Z"
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_27ce115abffeYJCxxF5lsCVsLr",
+      "agent": "oracle",
+      "updated_at": "2026-04-12T19:16:51.693Z"
     }
   }
 }

@@ -1,0 +1,19 @@
+CODE QUALITY REVIEW: export-close-features
+
+SYNTAX CHECK: PASS
+BARE EXCEPTS: None (9 instances of 'except Exception:' with proper noqa: BLE001 comments - ACCEPTABLE)
+UNUSED IMPORTS:
+  - main.py:9: import time (never used)
+  - main.py:603: self._last_flush_time (assigned but never read)
+PRINT STATEMENTS: None
+AI SLOP: Low - repeated 'except Exception: # noqa: BLE001' pattern used throughout for widget safety
+FILES CHANGED OUTSIDE SCOPE:
+  - exporter.py: modified (removed export_all_stages function)
+  - researcher.py: modified (logging, error handling improvements)
+
+FINAL VERDICT: REJECT
+
+Reasons:
+1. Files outside scope were modified (exporter.py, researcher.py) - violates requirement #6
+2. Unused import 'time' at line 9 should be removed
+3. Dead code '_last_flush_time' at line 603 should be removed or used

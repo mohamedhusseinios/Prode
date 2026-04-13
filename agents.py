@@ -349,16 +349,16 @@ class CriticAgent(Agent):
     """Reviews research output and provides structured quality feedback.
 
     The critic evaluates any research agent's output across multiple dimensions
-    and outputs a structured assessment with a quality score (1-10) and
+    and outputs a structured assessment with a quality score (0.0–1.0) and
     PASS/NEEDS_REVISION determination.
     """
 
-    DEFAULT_THRESHOLD = 7
+    DEFAULT_THRESHOLD = 0.7
 
     def __init__(
         self,
         model: Model,
-        threshold: int = DEFAULT_THRESHOLD,
+        threshold: float = DEFAULT_THRESHOLD,
         **kwargs,
     ):
         super().__init__(
@@ -369,7 +369,7 @@ class CriticAgent(Agent):
         )
         self.threshold = threshold
 
-    def _build_critic_prompt(self, threshold: int) -> str:
+    def _build_critic_prompt(self, threshold: float) -> str:
         return f"""You are an expert research quality critic. Your job is to evaluate research output for completeness, accuracy, depth, and actionability.
 
 For the research output you receive, evaluate it across these dimensions:
@@ -381,21 +381,21 @@ For the research output you receive, evaluate it across these dimensions:
 5. **Actionability**: Could a decision-maker use this to make a real decision?
 
 **Scoring**:
-- Score each dimension 1-10.
+- Score each dimension as a decimal from 0.0 to 1.0 (e.g. 0.8 means 80% quality).
 - Calculate the average as your overall quality score.
-- If average >= {threshold}/10 → output **PASS**
-- If average < {threshold}/10 → output **NEEDS_REVISION**
+- If average >= {threshold:.1f} → output **PASS**
+- If average < {threshold:.1f} → output **NEEDS_REVISION**
 
 **Output Format** (ALWAYS follow this exact format):
 
 ```
 Dimension Scores:
-- Coverage: X/10
-- Specificity: X/10
-- Logical Consistency: X/10
-- Depth: X/10
-- Actionability: X/10
-- Average Score: X/10
+- Coverage: 0.X
+- Specificity: 0.X
+- Logical Consistency: 0.X
+- Depth: 0.X
+- Actionability: 0.X
+- Average Score: 0.X
 
 Verdict: PASS | NEEDS_REVISION
 

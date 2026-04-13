@@ -691,6 +691,10 @@ class ProductResearchApp(App):
 
     _yolo_mode: reactive[bool] = reactive(False)
 
+    def watch__yolo_mode(self, new_val: bool) -> None:  # noqa: N802
+        if new_val and self._advance_event is not None:
+            self._advance_event.set()
+
     def __init__(self) -> None:
         super().__init__()
         self._config: Optional[ProviderConfig] = None
@@ -768,18 +772,19 @@ class ProductResearchApp(App):
 
     @on(Button.Pressed, "#close-btn")
     def _on_close_pressed(self) -> None:
-        self._cancel_and_quit()
+        asyncio.create_task(self._cancel_and_quit())
 
     @on(Button.Pressed, "#next-btn")
     def _on_next_pressed(self) -> None:
         btn = self.query_one("#next-btn", Button)
-        btn.disabled = True  # Guard against double-clicking
-        btn.display = False
-        btn.label = "Next →"
+        btn.disabled = True
         if self._is_last_stage:
             self._is_last_stage = False
+            btn.label = "Next →"
+            btn.display = False
             self.action_export()
         else:
+            btn.display = False
             if self._advance_event is not None:
                 self._advance_event.set()
 
@@ -849,8 +854,6 @@ class ProductResearchApp(App):
             self.query_one("#output-md", Static).update(RichMarkdown(""))
         except Exception:  # noqa: BLE001 — widget may not exist yet
             pass
-        self.query_one("#idea-input", IdeaInput).text = ""
-        self.query_one("#idea-input", IdeaInput).focus()
         self.query_one("#run-btn", Button).disabled = False
 
     async def _do_export(self) -> None:
@@ -870,6 +873,8 @@ class ProductResearchApp(App):
             new_session = await self.push_screen_wait(ExportSuccessModal(path=path))
             if new_session:
                 self._reset_session()
+                self.query_one("#idea-input", IdeaInput).load_text("")
+                self.query_one("#idea-input", IdeaInput).focus()
         except Exception as exc:
             self._set_status(f"✗  Export failed: {exc}")
 
@@ -911,18 +916,25 @@ class ProductResearchApp(App):
         else:
             inp.focus()
 
-    def _cancel_and_quit(self) -> None:
+    async def _cancel_and_quit(self) -> None:
         if self._quitting:
-            return
+            # Second click — force immediate termination
+            import os
+
+            os._exit(0)
         self._quitting = True
         for worker in self.workers:
             if worker.name == "research" and worker.is_running:
                 worker.cancel()
+                try:
+                    await asyncio.wait_for(worker.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass
                 break
         self.exit()
 
-    def action_quit(self) -> None:
-        self._cancel_and_quit()
+    async def action_quit(self) -> None:
+        await self._cancel_and_quit()
 
     # ── Research worker ───────────────────────────────────────────────────────
 
@@ -951,7 +963,12 @@ class ProductResearchApp(App):
                     sidebar.set_status(stage.id, "running")
                     status_bar.set_status(f"⟳  {stage.name}…")
                     self._output_buffer += f"\n\n## {stage.name}\n\n"
-                    self._stage_buffer = f"## {stage.name}\n\n"
+                    if self._yolo_mode:
+                        # In Yolo mode accumulate all stages in the display buffer
+                        # so output isn't wiped when the next stage starts.
+                        self._stage_buffer += f"\n\n## {stage.name}\n\n"
+                    else:
+                        self._stage_buffer = f"## {stage.name}\n\n"
 
                 elif event_type == "reflection_round":
                     stage_id, round_num = payload  # type: ignore[assignment]
@@ -961,17 +978,12 @@ class ProductResearchApp(App):
 
                 elif event_type == "stage_complete":
                     result = payload  # type: ignore[assignment]
+                    completed_stage_id = result["stage_id"]
                     stage_text = result["content"]
                     rounds = result["rounds_completed"]
                     score = result.get("score")
-                    stage_id = next(
-                        (s.id for s in STAGES if s.id == stage_id),
-                        next(s.id for s in STAGES if s.name in self._stage_buffer),
-                    )
-                    stage = next(s for s in STAGES if s.id == stage_id)
+                    stage = next(s for s in STAGES if s.id == completed_stage_id)
 
-                    self._stage_buffer += stage_text
-                    self._append_output(stage_text)
                     self._results[stage.id] = stage_text
 
                     score_str = f"{score:.0%}" if score is not None else "N/A"
@@ -980,15 +992,37 @@ class ProductResearchApp(App):
 
                     idx = STAGES.index(stage)
                     status_bar.set_progress(idx + 1)
+                    self._append_output(stage_text)
                     await self._render_markdown()
+
+                    is_last = idx == len(STAGES) - 1
+                    if not self._yolo_mode and not is_last:
+                        next_btn = self.query_one("#next-btn", Button)
+                        next_btn.label = "Next →"
+                        next_btn.display = True
+                        next_btn.disabled = False
+                        self._is_last_stage = False
+                        status_bar.set_status(
+                            f"✓  {stage.name} complete — Press N or click Next →"
+                        )
+                        self._advance_event.clear()
+                        await self._advance_event.wait()
+                        next_btn.display = False
 
                 elif event_type == "error":
                     error_msg = payload  # type: ignore[assignment]
+                    # Extract stage_id from error prefix like "[market] ..."
+                    error_stage_id = None
+                    if isinstance(error_msg, str) and error_msg.startswith("["):
+                        bracket_end = error_msg.index("]") if "]" in error_msg else -1
+                        if bracket_end > 0:
+                            error_stage_id = error_msg[1:bracket_end]
+                    if error_stage_id:
+                        sidebar.set_status(error_stage_id, "failed")
                     self._append_output(f"\n\n> ⚠ **{error_msg}**\n\n")
                     self.notify(
                         f"Error: {error_msg[:120]}", severity="error", timeout=10
                     )
-                    sidebar.set_status(stage.id, "failed")
 
                 elif event_type == "searching":
                     status_bar.set_status("🌐  Searching the web…")
@@ -1003,6 +1037,10 @@ class ProductResearchApp(App):
                 await self._do_export()
             else:
                 self._is_last_stage = True
+                next_btn = self.query_one("#next-btn", Button)
+                next_btn.label = "💾 Save"
+                next_btn.display = True
+                next_btn.disabled = False
                 status_bar.set_status("✓  Research complete — click Save to export")
                 self.notify("Research complete! Click Save to export.", timeout=5)
 
@@ -1018,10 +1056,11 @@ class ProductResearchApp(App):
 
         finally:
             self._running = False
-            run_btn = self.query_one("#run-btn", Button)
-            run_btn.disabled = False
-            if self._results:
-                self._show_save_button()
+            if not self._quitting:
+                run_btn = self.query_one("#run-btn", Button)
+                run_btn.disabled = False
+                if self._results:
+                    self._show_save_button()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

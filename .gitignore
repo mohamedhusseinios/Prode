@@ -7,3 +7,4 @@ __pycache__/
 .syrin/events
 .syrin/.dev-history
 .syrin/data
+.dual-graph/

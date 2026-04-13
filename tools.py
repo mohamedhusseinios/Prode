@@ -29,6 +29,7 @@ async def duckduckgo_search(query: str, max_results: int = 5) -> str:
         )
     }
 
+    html = ""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -41,7 +42,10 @@ async def duckduckgo_search(query: str, max_results: int = 5) -> str:
     except Exception:
         return ""
 
-    from bs4 import BeautifulSoup
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return ""
 
     soup = BeautifulSoup(html, "html.parser")
     results = []

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775909200409,
+  "lastScanned": 1776099514491,
   "projectRoot": "/Users/mohamedabdulrahman/Prode",
   "techStack": {
     "languages": [
@@ -44,21 +44,21 @@
     "__pycache__": {
       "path": "__pycache__",
       "purpose": null,
-      "fileCount": 5,
-      "lastAccessed": 1775909200402,
+      "fileCount": 7,
+      "lastAccessed": 1776099514486,
       "keyFiles": [
+        "agents.cpython-314.pyc",
         "config.cpython-314.pyc",
         "exporter.cpython-314.pyc",
         "main.cpython-314.pyc",
-        "researcher.cpython-314.pyc",
-        "stages.cpython-314.pyc"
+        "researcher.cpython-314.pyc"
       ]
     },
     "venv": {
       "path": "venv",
       "purpose": null,
       "fileCount": 3,
-      "lastAccessed": 1775909200403,
+      "lastAccessed": 1776099514486,
       "keyFiles": [
         "pyvenv.cfg"
       ]
@@ -66,8 +66,8 @@
     "venv/bin": {
       "path": "venv/bin",
       "purpose": "Executable scripts",
-      "fileCount": 15,
-      "lastAccessed": 1775909200404,
+      "fileCount": 24,
+      "lastAccessed": 1776099514488,
       "keyFiles": [
         "Activate.ps1",
         "activate",
@@ -78,27 +78,27 @@
       "path": "venv/lib",
       "purpose": "Library code",
       "fileCount": 1,
-      "lastAccessed": 1775909200405,
+      "lastAccessed": 1776099514490,
       "keyFiles": []
     }
   },
   "hotPaths": [
     {
       "path": "main.py",
-      "accessCount": 80,
-      "lastAccessed": 1775909538453,
+      "accessCount": 92,
+      "lastAccessed": 1776104702986,
       "type": "file"
     },
     {
       "path": "researcher.py",
-      "accessCount": 13,
-      "lastAccessed": 1775838036662,
+      "accessCount": 24,
+      "lastAccessed": 1776107451751,
       "type": "file"
     },
     {
       "path": "exporter.py",
-      "accessCount": 5,
-      "lastAccessed": 1775774246132,
+      "accessCount": 6,
+      "lastAccessed": 1776104598160,
       "type": "file"
     },
     {
@@ -109,8 +109,14 @@
     },
     {
       "path": "stages.py",
-      "accessCount": 3,
-      "lastAccessed": 1775837802736,
+      "accessCount": 4,
+      "lastAccessed": 1776107270729,
+      "type": "file"
+    },
+    {
+      "path": "agents.py",
+      "accessCount": 4,
+      "lastAccessed": 1776107457382,
       "type": "file"
     },
     {
@@ -120,9 +126,57 @@
       "type": "file"
     },
     {
+      "path": ".venv/lib/python3.14/site-packages/syrin/swarm/topologies/_reflection.py",
+      "accessCount": 2,
+      "lastAccessed": 1776106962312,
+      "type": "file"
+    },
+    {
+      "path": ".venv/lib/python3.14/site-packages/syrin/agent/_core.py",
+      "accessCount": 2,
+      "lastAccessed": 1776107200396,
+      "type": "file"
+    },
+    {
       "path": "config.py",
       "accessCount": 1,
       "lastAccessed": 1775909460785,
+      "type": "file"
+    },
+    {
+      "path": "venv/lib/python3.14/site-packages/syrin",
+      "accessCount": 1,
+      "lastAccessed": 1776106954926,
+      "type": "directory"
+    },
+    {
+      "path": ".venv/lib/python3.14/site-packages/syrin/swarm/_core.py",
+      "accessCount": 1,
+      "lastAccessed": 1776106961895,
+      "type": "file"
+    },
+    {
+      "path": ".venv/lib/python3.14/site-packages/syrin/swarm/_result.py",
+      "accessCount": 1,
+      "lastAccessed": 1776106962478,
+      "type": "file"
+    },
+    {
+      "path": ".venv/lib/python3.14/site-packages/syrin/agent/_run.py",
+      "accessCount": 1,
+      "lastAccessed": 1776107072521,
+      "type": "file"
+    },
+    {
+      "path": ".venv/lib/python3.14/site-packages/syrin/agent/_construction.py",
+      "accessCount": 1,
+      "lastAccessed": 1776107199760,
+      "type": "file"
+    },
+    {
+      "path": "tools.py",
+      "accessCount": 1,
+      "lastAccessed": 1776107270289,
       "type": "file"
     }
   ],
